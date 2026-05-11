@@ -814,14 +814,39 @@ def _parse_version(v: str) -> tuple:
         return ()
 
 
+_RELEASE_CACHE: dict = {"data": None, "ts": 0.0, "error": None, "error_ts": 0.0}
+_RELEASE_CACHE_TTL = 300       # cache a 200-ok response for 5 minutes
+_RELEASE_ERROR_TTL = 60        # cache a 403/error response for 1 minute
+                               # (don't keep hammering when we're rate-limited)
+
+
 def _latest_release() -> dict:
-    """Fetch the latest published release from GitHub. Returns the parsed
-    JSON, or raises requests.HTTPError on non-2xx."""
+    """Fetch the latest published release from GitHub, with a 5-minute
+    cache to avoid hammering api.github.com's 60-req/hr anonymous quota.
+    Errors (incl. 403 rate-limit) are cached briefly and re-raised so
+    callers see a consistent failure without firing more requests."""
+    now = time.time()
+    if _RELEASE_CACHE["data"] and (now - _RELEASE_CACHE["ts"]) < _RELEASE_CACHE_TTL:
+        return _RELEASE_CACHE["data"]
+    # If we recently failed, replay the same error rather than re-hitting
+    # the rate-limited endpoint -- otherwise the silent-check-on-boot +
+    # any UI poll multiplies the rate-limit hits.
+    if _RELEASE_CACHE["error"] and (now - _RELEASE_CACHE["error_ts"]) < _RELEASE_ERROR_TTL:
+        raise _RELEASE_CACHE["error"]
     url = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
     headers = {"Accept": "application/vnd.github+json"}
-    r = requests.get(url, headers=headers, timeout=10)
-    r.raise_for_status()
-    return r.json()
+    try:
+        r = requests.get(url, headers=headers, timeout=10)
+        r.raise_for_status()
+        data = r.json()
+        _RELEASE_CACHE["data"] = data
+        _RELEASE_CACHE["ts"] = now
+        _RELEASE_CACHE["error"] = None
+        return data
+    except requests.RequestException as exc:
+        _RELEASE_CACHE["error"] = exc
+        _RELEASE_CACHE["error_ts"] = now
+        raise
 
 
 @app.route("/api/check-update")
@@ -843,11 +868,21 @@ def api_check_update():
     try:
         rel = _latest_release()
     except requests.HTTPError as exc:
-        if exc.response is not None and exc.response.status_code == 404:
+        sc = exc.response.status_code if exc.response is not None else 0
+        if sc == 404:
             return jsonify({
                 "status": "no-releases",
                 "current": APP_VERSION,
                 "message": "No releases published yet.",
+            })
+        if sc == 403:
+            # GitHub anonymous API limit is 60/hr per IP. Surface that
+            # specifically so the UI can render it as informational
+            # rather than scary-red.
+            return jsonify({
+                "status": "rate-limited",
+                "current": APP_VERSION,
+                "message": "GitHub API rate limit reached. Try again in a few minutes — the app caches errors briefly to avoid making it worse.",
             })
         return jsonify({
             "status": "error",

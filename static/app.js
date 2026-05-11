@@ -903,6 +903,11 @@ $("update-check").addEventListener("click", async () => {
     } else if (j.status === "up-to-date") {
       setUpdateStatus(j.message, "ok");
       setUpdateBadge(false);
+    } else if (j.status === "rate-limited" || j.status === "no-releases" || j.status === "dev-build" || j.status === "not-configured") {
+      // Informational, not an error. GitHub's 60-req/hr anon quota is
+      // easy to burn through during dev; show in muted text, not red.
+      setUpdateStatus(j.message || j.status, "");
+      setUpdateBadge(false);
     } else {
       setUpdateStatus(j.message || j.status, "error");
       setUpdateBadge(false);
