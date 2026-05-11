@@ -1,0 +1,527 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Throughput Tester — Nova Connect</title>
+<link rel="icon" type="image/svg+xml" href="/static/images/nova-connect-mark.svg" />
+<link rel="preconnect" href="https://rsms.me/">
+<link rel="stylesheet" href="https://rsms.me/inter/inter.css">
+<link rel="stylesheet" href="/static/style.css" />
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+</head>
+<body>
+
+<!-- ─── App shell ─────────────────────────────────────────────────────────── -->
+<aside class="sidebar">
+  <div class="sidebar-brand">
+    <img class="brand-mark"
+         src="/static/images/nova-connect.png"
+         onerror="this.onerror=null;this.src='/static/images/nova-connect.jpg';this.onerror=function(){this.onerror=null;this.src='/static/images/nova-connect-mark.svg';}"
+         alt="Nova Connect"
+         aria-hidden="true" />
+    <div>
+      <div class="brand-name">Throughput Tester</div>
+      <div class="brand-sub">by Nova Connect</div>
+    </div>
+  </div>
+
+  <nav class="sidebar-nav">
+    <a href="#test" data-view="test" class="nav-item active">
+      <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+      Test
+    </a>
+    <a href="#results" data-view="results" class="nav-item">
+      <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="M7 14l4-4 4 4 5-5"/></svg>
+      Results
+    </a>
+    <a href="#logs" data-view="logs" class="nav-item">
+      <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M9 13h6"/><path d="M9 17h6"/></svg>
+      Logs
+    </a>
+    <a href="#settings" data-view="settings" class="nav-item">
+      <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+      Settings
+    </a>
+  </nav>
+
+  <div class="sidebar-foot">
+    <div class="status-pill" id="conn-pill" title="WebSocket status">
+      <span class="dot"></span><span>Disconnected</span>
+    </div>
+    <div class="tool-strip" id="tool-strip"></div>
+  </div>
+</aside>
+
+<!-- ─── Top bar ───────────────────────────────────────────────────────────── -->
+<header class="topbar">
+  <div class="topbar-left">
+    <div class="node-id">
+      <span class="muted">Node:</span>
+      <span id="node-name-display">—</span>
+    </div>
+  </div>
+  <div class="topbar-center">
+    <div class="role-switch" role="tablist" aria-label="Node role">
+      <button class="role-opt" data-role="sender">Sender</button>
+      <button class="role-opt" data-role="receiver">Receiver</button>
+      <button class="role-opt active" data-role="either">Either</button>
+    </div>
+  </div>
+  <div class="topbar-right">
+    <div class="peer-state" id="peer-state">
+      <span class="muted">Peer:</span>
+      <span id="peer-display">not set</span>
+    </div>
+  </div>
+</header>
+
+<!-- ─── Main content ─────────────────────────────────────────────────────── -->
+<main class="main">
+
+  <!-- ─── Test view ─── -->
+  <section class="view view-test" data-view="test">
+
+    <header class="view-header">
+      <div>
+        <h1>Test</h1>
+        <p class="view-sub" id="test-sub">Configure and run a throughput test.</p>
+      </div>
+      <div class="view-actions" id="test-actions">
+        <button id="stop" class="btn btn-danger" disabled>
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="1"/></svg>
+          Stop
+        </button>
+        <button id="start" class="btn btn-primary">
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+          Start test
+        </button>
+      </div>
+    </header>
+
+    <!-- Sender-only configuration -->
+    <div class="config-grid" id="config-grid">
+      <div class="card">
+        <div class="card-title">Mode</div>
+        <div class="field">
+          <label>Test type</label>
+          <select id="mode">
+            <option value="auto">Auto — find max stable bandwidth</option>
+            <option value="srt">SRT — production-like (RTT, retrans, drops)</option>
+            <option value="iperf3">iperf3 UDP — loss & jitter</option>
+            <option value="ffmpeg_udp">ffmpeg UDP — MPEG-TS</option>
+            <option value="ping">Ping — RTT only</option>
+          </select>
+        </div>
+        <div class="field srt-only">
+          <label>SRT latency <span class="hint-inline">ms</span></label>
+          <input id="srt-latency" type="number" min="20" max="8000" value="120" />
+        </div>
+        <div class="field video-only">
+          <label>Parallel streams</label>
+          <select id="streams">
+            <option value="1" selected>1 — single stream</option>
+            <option value="2">2 — matches production</option>
+            <option value="3">3</option>
+            <option value="4">4</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">Target</div>
+        <div class="field">
+          <label>Peer host</label>
+          <input id="peer-host" type="text" placeholder="192.168.10.7" />
+        </div>
+        <div class="field-row">
+          <div class="field">
+            <label>Port</label>
+            <input id="peer-port" type="number" value="8080" />
+          </div>
+          <div class="field">
+            <label>Duration <span class="hint-inline">s</span></label>
+            <input id="duration-num" type="number" min="1" max="3600" value="30" />
+          </div>
+        </div>
+      </div>
+
+      <div class="card video-only">
+        <div class="card-title">Source</div>
+        <div class="field">
+          <label>Test source</label>
+          <select id="source">
+            <option value="testpattern">Test pattern (testsrc2)</option>
+            <option value="file">Video file (your clip)</option>
+          </select>
+        </div>
+        <div class="field file-only" style="display:none">
+          <label>Clip</label>
+          <select id="source-file"><option value="">— pick a file —</option></select>
+        </div>
+        <div class="field-row testpattern-only">
+          <div class="field">
+            <label>Resolution</label>
+            <select id="resolution">
+              <option value="1280x720">720p</option>
+              <option value="1920x1080">1080p</option>
+              <option value="2560x1440">1440p</option>
+              <option value="3840x2160">2160p</option>
+            </select>
+          </div>
+          <div class="field">
+            <label>Framerate</label>
+            <select id="framerate">
+              <option value="25">25</option>
+              <option value="30" selected>30</option>
+              <option value="50">50</option>
+              <option value="60">60</option>
+            </select>
+          </div>
+        </div>
+      </div>
+
+      <div class="card manual-only">
+        <div class="card-title">Bitrate</div>
+        <div class="field bitrate-field">
+          <label>Target bitrate <span class="hint-inline">Mbps</span></label>
+          <div class="slider-row">
+            <input id="bitrate-slider" type="range" min="1" max="100" step="1" value="10" />
+            <input id="bitrate-num" type="number" min="0.1" max="2000" step="0.1" value="10" />
+          </div>
+        </div>
+        <label class="checkbox file-only" style="display:none">
+          <input id="bitrate-native" type="checkbox" checked />
+          Use file's native bitrate (<code>-c copy</code> — zero encoding load)
+        </label>
+      </div>
+
+      <div class="card auto-only" style="display:none">
+        <div class="card-title">Auto-test parameters</div>
+        <div class="field-row">
+          <div class="field">
+            <label>Start (Mbps)</label>
+            <input id="auto-start" type="number" min="1" step="1" value="5" />
+          </div>
+          <div class="field">
+            <label>Ceiling (Mbps)</label>
+            <input id="auto-ceiling" type="number" min="1" step="1" value="50" />
+          </div>
+        </div>
+        <div class="field-row">
+          <div class="field">
+            <label>Probe (s)</label>
+            <input id="auto-probe" type="number" min="5" step="1" value="15" />
+          </div>
+          <div class="field">
+            <label>Soak (s)</label>
+            <input id="auto-soak" type="number" min="0" step="5" value="60" />
+          </div>
+        </div>
+        <div class="field-row">
+          <div class="field">
+            <label>Max loss %</label>
+            <input id="auto-loss" type="number" min="0" step="0.1" value="0.5" />
+          </div>
+          <div class="field">
+            <label>Max RTT (ms)</label>
+            <input id="auto-rtt" type="number" min="1" step="1" value="250" />
+          </div>
+        </div>
+        <div class="hint">
+          Probes upward, then binary-searches between last-pass and first-fail,
+          then runs a sustained soak at 95% of the max.
+        </div>
+      </div>
+    </div>
+
+    <!-- Receiver-only: listening panel -->
+    <div class="receiver-panel" id="receiver-panel" style="display:none">
+      <div class="card big">
+        <div class="receiver-state" id="receiver-state">
+          <div class="indicator pulse" id="recv-indicator">
+            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12h2"/><path d="M20 12h2"/><circle cx="12" cy="12" r="3"/></svg>
+          </div>
+          <div>
+            <div class="receiver-title">Listening for inbound tests</div>
+            <div class="receiver-sub" id="receiver-sub">No connection yet. Trigger a test from the sender node.</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Auto-test phase progress (visible during/after auto-test) -->
+    <div class="card auto-only" id="auto-status" style="display:none">
+      <div class="card-head">
+        <div class="card-title">Auto-test progress</div>
+        <div class="card-meta" id="auto-meta">idle</div>
+      </div>
+      <div class="auto-result" id="auto-result" style="display:none">
+        <div class="auto-headline">
+          <div>
+            <div class="auto-headline-num">
+              <span id="auto-max-mbps">—</span><span class="kpi-unit">Mbps · per stream</span>
+            </div>
+            <div class="auto-headline-totals">
+              <span id="auto-streams-count">1</span>
+              <span class="muted">stream(s) ·</span>
+              <span id="auto-total-mbps">—</span>
+              <span class="kpi-unit">Mbps total</span>
+            </div>
+          </div>
+          <div class="auto-headline-soak"><span id="auto-soak-state">—</span></div>
+        </div>
+
+        <div class="recommend-block" id="recommend-block">
+          <div class="recommend-title">Recommended video quality <span class="muted small">— per stream, with 15% encoding headroom</span></div>
+          <div class="recommend-highlight" id="recommend-highlight"></div>
+          <table class="data-table small recommend-table">
+            <thead><tr><th>Preset</th><th class="num">Bitrate</th><th>Description</th><th>Fit</th></tr></thead>
+            <tbody id="recommend-tbody"></tbody>
+          </table>
+        </div>
+      </div>
+      <div class="phase-strip">
+        <div class="phase" data-phase="probe"><span class="phase-dot"></span><span class="phase-name">Probe</span><span class="phase-detail" id="phase-probe-detail">—</span></div>
+        <div class="phase" data-phase="narrow"><span class="phase-dot"></span><span class="phase-name">Narrow</span><span class="phase-detail" id="phase-narrow-detail">—</span></div>
+        <div class="phase" data-phase="soak"><span class="phase-dot"></span><span class="phase-name">Soak</span><span class="phase-detail" id="phase-soak-detail">—</span></div>
+      </div>
+      <div class="auto-attempts-wrap">
+        <table class="data-table small" id="auto-attempts">
+          <thead><tr><th>Phase</th><th class="num">Target Mbps</th><th class="num">Delivered Mbps</th><th class="num">Loss %</th><th class="num">RTT ms</th><th>Result</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Live status (visible during a test) -->
+    <div class="card manual-only" id="status-card">
+      <div class="card-head">
+        <div class="card-title">Live</div>
+        <div class="card-meta" id="status-line">idle</div>
+      </div>
+      <div class="kpis">
+        <div class="kpi">
+          <div class="kpi-label">Throughput</div>
+          <div class="kpi-value"><span id="kpi-throughput">—</span><span class="kpi-unit">Mbps</span></div>
+        </div>
+        <div class="kpi">
+          <div class="kpi-label">Packet loss</div>
+          <div class="kpi-value"><span id="kpi-loss">—</span><span class="kpi-unit">%</span></div>
+        </div>
+        <div class="kpi">
+          <div class="kpi-label">Jitter</div>
+          <div class="kpi-value"><span id="kpi-jitter">—</span><span class="kpi-unit">ms</span></div>
+        </div>
+        <div class="kpi">
+          <div class="kpi-label">RTT</div>
+          <div class="kpi-value"><span id="kpi-rtt">—</span><span class="kpi-unit">ms</span></div>
+        </div>
+        <div class="kpi">
+          <div class="kpi-label">Retrans</div>
+          <div class="kpi-value"><span id="kpi-retrans">—</span><span class="kpi-unit">pkts</span></div>
+        </div>
+        <div class="kpi">
+          <div class="kpi-label">Dropped</div>
+          <div class="kpi-value"><span id="kpi-drop">—</span><span class="kpi-unit">pkts</span></div>
+        </div>
+      </div>
+      <div class="chart-wrap">
+        <canvas id="chart"></canvas>
+      </div>
+    </div>
+
+    <!-- Source / live preview (when applicable) -->
+    <div class="preview-grid video-only">
+      <div class="card">
+        <div class="card-title">Test pattern preview <span class="card-sub testpattern-only">— what the sender will generate</span><span class="card-sub file-only" style="display:none">— selected clip</span></div>
+        <div class="preview-frame testpattern-only">
+          <img id="preview-img" alt="test pattern preview" />
+        </div>
+        <div class="preview-meta file-only" style="display:none">
+          <div id="clip-info" class="mono small">No clip selected.</div>
+          <div class="hint">
+            Drop clips into <code id="clips-dir">data/clips/</code> on the host.
+            When "native bitrate" is ticked, the file streams via <code>-c copy</code> — zero Pi-side encoding.
+          </div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-title">Live preview <span class="card-sub">— decoded from active stream</span></div>
+        <div class="preview-pair">
+          <div>
+            <div class="preview-label">Sending</div>
+            <img id="send-preview" alt="send preview" />
+          </div>
+          <div>
+            <div class="preview-label">Receiving</div>
+            <img id="recv-preview" alt="receive preview" />
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ─── Results view ─── -->
+  <section class="view view-results" data-view="results" hidden>
+    <header class="view-header">
+      <div>
+        <h1>Results</h1>
+        <p class="view-sub">Past test runs from this node.</p>
+      </div>
+      <div class="view-actions">
+        <button id="results-refresh" class="btn btn-ghost">Refresh</button>
+        <button id="results-export-json" class="btn btn-ghost">Export JSON</button>
+        <button id="results-export-csv" class="btn btn-ghost">Export CSV</button>
+      </div>
+    </header>
+
+    <div class="card">
+      <div class="filters">
+        <input id="results-search" type="text" placeholder="Search…" />
+        <select id="results-filter-mode">
+          <option value="">All modes</option>
+          <option>iperf3</option>
+          <option>srt</option>
+          <option>ffmpeg_udp</option>
+          <option>ping</option>
+        </select>
+        <select id="results-filter-role">
+          <option value="">Any role</option>
+          <option>sender</option>
+          <option>receiver</option>
+        </select>
+      </div>
+      <div class="table-wrap">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>When</th>
+              <th>Mode</th>
+              <th>Role</th>
+              <th class="num">Bitrate</th>
+              <th class="num">Throughput</th>
+              <th class="num">Loss %</th>
+              <th class="num">Jitter ms</th>
+              <th class="num">RTT ms</th>
+              <th>Result</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody id="results-body"></tbody>
+        </table>
+        <div class="empty-state" id="results-empty" style="display:none">
+          No tests have been recorded yet.
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ─── Logs view ─── -->
+  <section class="view view-logs" data-view="logs" hidden>
+    <header class="view-header">
+      <div>
+        <h1>Logs</h1>
+        <p class="view-sub">Raw output from each test run (ffmpeg / iperf3 / srt-live-transmit).</p>
+      </div>
+      <div class="view-actions">
+        <select id="logs-select"></select>
+        <label class="inline-check">
+          <input id="logs-autoscroll" type="checkbox" checked />
+          Auto-scroll
+        </label>
+        <button id="logs-download" class="btn btn-ghost">Download</button>
+      </div>
+    </header>
+
+    <div class="card no-pad">
+      <div class="logs-search">
+        <input id="logs-search" type="text" placeholder="Filter lines…" />
+      </div>
+      <pre class="log-output" id="log-output">Select a log to view.</pre>
+    </div>
+  </section>
+
+  <!-- ─── Settings view ─── -->
+  <section class="view view-settings" data-view="settings" hidden>
+    <header class="view-header">
+      <div>
+        <h1>Settings</h1>
+        <p class="view-sub">Per-node configuration. Persisted in <code>config.json</code>.</p>
+      </div>
+    </header>
+
+    <div class="settings-grid">
+      <div class="card">
+        <div class="card-title">Node identity</div>
+        <div class="field">
+          <label>Node name</label>
+          <input id="set-node-name" type="text" placeholder="e.g. start-pi or finish-pi" />
+          <div class="hint">Shown in the top bar and tagged on every test result.</div>
+        </div>
+        <div class="field">
+          <label>Default role</label>
+          <select id="set-node-role">
+            <option value="either">Either — symmetric (default)</option>
+            <option value="sender">Sender — this node initiates tests</option>
+            <option value="receiver">Receiver — this node only listens</option>
+          </select>
+          <div class="hint">Determines which controls appear on the Test view.</div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">Network</div>
+        <div class="field">
+          <label>Peer host</label>
+          <input id="set-peer-host" type="text" placeholder="192.168.10.7" />
+          <div class="hint">IP or hostname of the other node.</div>
+        </div>
+        <div class="field">
+          <label>Peer API port</label>
+          <input id="set-peer-port" type="number" value="8080" />
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">Defaults</div>
+        <div class="field">
+          <label>Default mode</label>
+          <select id="set-default-mode">
+            <option value="srt">SRT</option>
+            <option value="iperf3">iperf3</option>
+            <option value="ffmpeg_udp">ffmpeg UDP</option>
+            <option value="ping">Ping</option>
+          </select>
+        </div>
+        <div class="field-row">
+          <div class="field">
+            <label>Bitrate (Mbps)</label>
+            <input id="set-default-bitrate" type="number" value="10" />
+          </div>
+          <div class="field">
+            <label>Duration (s)</label>
+            <input id="set-default-duration" type="number" value="30" />
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">Environment</div>
+        <div class="checklist" id="env-checklist">
+          <div class="check-row"><span class="check-name">Loading…</span></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="settings-actions">
+      <button id="settings-save" class="btn btn-primary">Save settings</button>
+      <span id="settings-save-status" class="muted small"></span>
+    </div>
+  </section>
+
+</main>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

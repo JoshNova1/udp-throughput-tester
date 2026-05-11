@@ -1,0 +1,5 @@
+# Additional dependencies for the standalone desktop build.
+# Install on top of requirements.txt:
+#   pip install -r requirements.txt -r requirements-desktop.txt
+pywebview==5.3.2
+pyinstaller==6.10.0

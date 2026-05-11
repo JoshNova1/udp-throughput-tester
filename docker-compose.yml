@@ -1,0 +1,23 @@
+# UDP / SRT Throughput Tester
+#
+# Host networking is required so UDP/SRT ports and ICMP work without NAT.
+# Same compose file deploys to either Pi — the app figures out the rest.
+
+services:
+  udp-tester:
+    build: .
+    image: udp-throughput-tester:latest
+    container_name: udp-tester
+    restart: unless-stopped
+    network_mode: host          # essential for UDP + ICMP fidelity
+    cap_add:
+      - NET_RAW                 # required for ping (ICMP)
+    environment:
+      PORT: 8080
+      # Optional: pre-seed peer hostname/IP; otherwise set in the web UI.
+      # PEER_HOST: 192.168.10.7
+      DATA_DIR: /data
+      CLIPS_DIR: /data/clips    # drop previous-event clips here for file-mode tests
+    volumes:
+      - ./data:/data
+      - ./clips:/data/clips     # bind-mount so you can scp clips in without `docker cp`
