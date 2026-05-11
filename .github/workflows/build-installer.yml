@@ -1,0 +1,102 @@
+name: Build Windows installer
+
+# Runs on every push to main + when manually triggered. Each successful
+# build is published as a GitHub Release tagged v1.0.<commit-count> with
+# the Setup.exe attached, so the in-app updater can find it via
+#   https://api.github.com/repos/${{ github.repository }}/releases/latest
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+permissions:
+  contents: write   # required to create releases + upload assets
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # full history so we can count commits for the version
+
+      - name: Compute version
+        id: ver
+        shell: pwsh
+        run: |
+          $count = (git rev-list --count HEAD).Trim()
+          $version = "1.0.$count"
+          Write-Host "version=$version"
+          "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "tag=v$version"    | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+      - name: Setup Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~\AppData\Local\pip\Cache
+          key: pip-${{ runner.os }}-${{ hashFiles('requirements*.txt') }}
+
+      - name: Cache bin/ (ffmpeg + iperf3)
+        id: bincache
+        uses: actions/cache@v4
+        with:
+          path: bin
+          key: bin-${{ runner.os }}-v1
+
+      - name: Install Inno Setup
+        run: choco install innosetup --no-progress --yes
+
+      - name: Fetch ffmpeg + iperf3 (only if not cached)
+        if: steps.bincache.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          pwsh -NoProfile -ExecutionPolicy Bypass -File deploy\fetch-binaries.ps1
+
+      - name: Build installer
+        shell: pwsh
+        run: |
+          deploy\build-windows.bat `
+            -SkipBinaries `
+            -Version "${{ steps.ver.outputs.version }}" `
+            -Repo "${{ github.repository }}"
+
+      - name: Verify + publish stable-named copy
+        shell: pwsh
+        run: |
+          $setup = Get-ChildItem "dist\ThroughputTester-Setup-*.exe" | Select-Object -First 1
+          if (-not $setup) { throw "no installer found in dist\" }
+          Write-Host "built: $($setup.FullName)  ($([Math]::Round($setup.Length/1MB,1)) MB)"
+          # Stable-name copy so the URL doesn't drift per release; downstream
+          # users can hit /releases/latest/download/ThroughputTester-Setup.exe
+          Copy-Item $setup.FullName "dist\ThroughputTester-Setup.exe"
+          "SETUP_PATH=$($setup.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ThroughputTester-Setup-${{ steps.ver.outputs.version }}
+          path: dist\ThroughputTester-Setup-*.exe
+          retention-days: 90
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.ver.outputs.tag }}
+          name: ${{ steps.ver.outputs.tag }}
+          body: |
+            Automated build from ${{ github.sha }}.
+
+            Download `ThroughputTester-Setup-${{ steps.ver.outputs.version }}.exe`
+            below and double-click to install. Or click **Settings → Check for
+            updates** inside an existing installation.
+          files: |
+            dist\ThroughputTester-Setup-*.exe
+            dist\ThroughputTester-Setup.exe
+          fail_on_unmatched_files: true

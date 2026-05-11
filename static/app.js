@@ -276,6 +276,16 @@ const loadConfig = async () => {
   state.nodeName = role.node_name || cfg.node_name || "";
   state.toolsAvailable = status.tools || {};
   state.encoders = status.encoders || {};
+  state.app = status.app || {};
+
+  // App version display
+  const ve = document.getElementById("app-version-current");
+  if (ve) {
+    const v = state.app.version || "?";
+    const repo = state.app.repo || "";
+    ve.textContent = repo && !repo.includes("REPLACE_ME")
+      ? `${v} (${repo})` : v;
+  }
 
   // Top bar
   $("node-name-display").textContent = state.nodeName || `(unnamed @ ${location.host})`;
@@ -769,6 +779,57 @@ const refreshSettings = () => {
     </div>
   `).join("");
 };
+// ─── Updater ────────────────────────────────────────────────────────────────
+const setUpdateStatus = (msg, kind) => {
+  const el = $("update-status");
+  el.textContent = msg || "";
+  el.style.color = kind === "error" ? "#f87171"
+                  : kind === "ok" ? "#86efac" : "";
+};
+const showInstallBtn = (show) => {
+  $("update-action").style.display = show ? "" : "none";
+};
+let pendingAssetUrl = null;
+$("update-check").addEventListener("click", async () => {
+  setUpdateStatus("checking…");
+  showInstallBtn(false);
+  try {
+    const r = await fetch("/api/check-update");
+    const j = await r.json();
+    if (j.status === "update-available") {
+      setUpdateStatus(j.message + (j.asset_size
+        ? ` (${(j.asset_size / 1024 / 1024).toFixed(1)} MB)` : ""), "ok");
+      pendingAssetUrl = j.asset_url;
+      showInstallBtn(Boolean(j.asset_url));
+    } else if (j.status === "up-to-date") {
+      setUpdateStatus(j.message, "ok");
+    } else {
+      setUpdateStatus(j.message || j.status, "error");
+    }
+  } catch (e) {
+    setUpdateStatus("check failed: " + e.message, "error");
+  }
+});
+$("update-install").addEventListener("click", async () => {
+  if (!confirm("Download and install the update? The app will close and "
+             + "reopen automatically.")) return;
+  setUpdateStatus("downloading…");
+  $("update-install").disabled = true;
+  try {
+    const r = await fetch("/api/install-update", { method: "POST" });
+    const j = await r.json();
+    if (j.ok) {
+      setUpdateStatus("Installer launched — closing app…", "ok");
+    } else {
+      setUpdateStatus(j.error || "install failed", "error");
+      $("update-install").disabled = false;
+    }
+  } catch (e) {
+    // Network error here is expected once the app exits — ignore.
+    setUpdateStatus("Installer launched — closing app…", "ok");
+  }
+});
+
 $("settings-save").addEventListener("click", async () => {
   const newCfg = {
     peer_host: $("set-peer-host").value,

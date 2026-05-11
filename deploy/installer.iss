@@ -13,7 +13,14 @@
 #define AppName       "Nova Connect Throughput Tester"
 #define AppShortName  "ThroughputTester"
 #define AppPublisher  "Nova Connect"
-#define AppVersion    "1.0.0"
+; AppVersion can be overridden from the build script:
+;     ISCC.exe /DAppVersion=1.2.3 installer.iss
+; The CI workflow passes the auto-derived 1.0.<commit-count> here so the
+; Setup-X.Y.Z.exe filename, Apps&Features entry, and in-app version
+; constant all stay in lockstep.
+#ifndef AppVersion
+  #define AppVersion "0.0.0-dev"
+#endif
 #define AppExeName    "UDPThroughputTester.exe"
 #define AppId         "{{A2C7F23D-9F1B-4F62-8F1E-3BC0D6F2A001}"
 #define SourceDir     "..\dist\UDPThroughputTester"

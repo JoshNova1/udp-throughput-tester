@@ -42,6 +42,12 @@ from tests.srt_test import SrtReceiver, SrtSender
 from tests.ffmpeg_udp_test import FfmpegUdpReceiver, FfmpegUdpSender
 from tests.auto_test import AutoTestSender
 
+try:
+    from _buildinfo import APP_VERSION, GITHUB_REPO
+except ImportError:
+    APP_VERSION = "0.0.0-dev"
+    GITHUB_REPO = "REPLACE_ME/REPLACE_ME"
+
 # ---------------------------------------------------------------------------
 # Setup
 # ---------------------------------------------------------------------------
@@ -335,6 +341,10 @@ def api_status():
             "h264_v4l2m2m": has_v4l2_h264(),
         },
         "clips_dir": str(CLIPS_DIR),
+        "app": {
+            "version": APP_VERSION,
+            "repo": GITHUB_REPO,
+        },
     })
 
 
@@ -702,6 +712,182 @@ def api_history():
 @app.route("/metrics")
 def metrics():
     return generate_latest(PROM), 200, {"Content-Type": CONTENT_TYPE_LATEST}
+
+
+# ---------------------------------------------------------------------------
+# Routes — in-app updater
+# ---------------------------------------------------------------------------
+
+def _parse_version(v: str) -> tuple:
+    """Crude semver parse: '1.2.3' or 'v1.2.3' -> (1,2,3). Returns () for
+    non-numeric (dev / pre-release / weird) so they always compare as older."""
+    if not v:
+        return ()
+    v = v.lstrip("vV").split("-", 1)[0].split("+", 1)[0]
+    try:
+        return tuple(int(p) for p in v.split("."))
+    except ValueError:
+        return ()
+
+
+def _latest_release() -> dict:
+    """Fetch the latest published release from GitHub. Returns the parsed
+    JSON, or raises requests.HTTPError on non-2xx."""
+    url = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
+    headers = {"Accept": "application/vnd.github+json"}
+    r = requests.get(url, headers=headers, timeout=10)
+    r.raise_for_status()
+    return r.json()
+
+
+@app.route("/api/check-update")
+def api_check_update():
+    """Compare the running version against GitHub's latest release tag."""
+    if "REPLACE_ME" in GITHUB_REPO:
+        return jsonify({
+            "status": "not-configured",
+            "current": APP_VERSION,
+            "message": "Update repo not configured at build time.",
+        })
+    current = _parse_version(APP_VERSION)
+    if not current:
+        return jsonify({
+            "status": "dev-build",
+            "current": APP_VERSION,
+            "message": "Running a dev / unversioned build — auto-update disabled.",
+        })
+    try:
+        rel = _latest_release()
+    except requests.HTTPError as exc:
+        if exc.response is not None and exc.response.status_code == 404:
+            return jsonify({
+                "status": "no-releases",
+                "current": APP_VERSION,
+                "message": "No releases published yet.",
+            })
+        return jsonify({
+            "status": "error",
+            "current": APP_VERSION,
+            "message": f"GitHub API error: {exc}",
+        }), 502
+    except requests.RequestException as exc:
+        return jsonify({
+            "status": "error",
+            "current": APP_VERSION,
+            "message": f"Network error: {exc}",
+        }), 502
+
+    tag = rel.get("tag_name", "")
+    latest = _parse_version(tag)
+    # Find the Setup.exe asset in the release.
+    asset_url = None
+    asset_name = None
+    asset_size = None
+    for a in rel.get("assets", []):
+        name = a.get("name", "")
+        if name.lower().endswith(".exe") and "setup" in name.lower():
+            asset_url = a.get("browser_download_url")
+            asset_name = name
+            asset_size = a.get("size")
+            break
+
+    if not latest or latest <= current:
+        return jsonify({
+            "status": "up-to-date",
+            "current": APP_VERSION,
+            "latest": tag,
+            "message": f"You're on the latest version ({APP_VERSION}).",
+        })
+
+    return jsonify({
+        "status": "update-available",
+        "current": APP_VERSION,
+        "latest": tag,
+        "release_url": rel.get("html_url"),
+        "release_notes": rel.get("body") or "",
+        "asset_url": asset_url,
+        "asset_name": asset_name,
+        "asset_size": asset_size,
+        "published_at": rel.get("published_at"),
+        "message": f"Update available: {tag} (you have {APP_VERSION}).",
+    })
+
+
+@app.route("/api/install-update", methods=["POST"])
+def api_install_update():
+    """Download the latest Setup.exe and launch it silently. The running
+    app then exits so Inno can replace its files; the installer's
+    post-install [Run] entry relaunches the new exe."""
+    if "REPLACE_ME" in GITHUB_REPO:
+        return jsonify({"error": "Update repo not configured"}), 400
+    try:
+        rel = _latest_release()
+    except requests.RequestException as exc:
+        return jsonify({"error": f"Could not fetch release: {exc}"}), 502
+
+    asset_url = None
+    asset_name = None
+    for a in rel.get("assets", []):
+        name = a.get("name", "")
+        if name.lower().endswith(".exe") and "setup" in name.lower():
+            asset_url = a.get("browser_download_url")
+            asset_name = name
+            break
+    if not asset_url:
+        return jsonify({"error": "No Setup.exe asset in latest release"}), 404
+
+    import tempfile
+    tmpdir = Path(tempfile.gettempdir()) / "throughput-tester-update"
+    tmpdir.mkdir(exist_ok=True)
+    target = tmpdir / asset_name
+
+    try:
+        with requests.get(asset_url, stream=True, timeout=120) as r:
+            r.raise_for_status()
+            with open(target, "wb") as f:
+                for chunk in r.iter_content(chunk_size=1 << 16):
+                    if chunk:
+                        f.write(chunk)
+    except requests.RequestException as exc:
+        return jsonify({"error": f"Download failed: {exc}"}), 502
+
+    # Launch installer detached and exit. The launcher .bat is the cleanest
+    # way to (a) wait for the current pid to die so Inno doesn't have to
+    # CloseApplications, (b) run the installer silently, (c) relaunch the
+    # new exe afterwards (which Inno's skipifsilent would otherwise prevent).
+    import subprocess, sys
+    pid = os.getpid()
+    install_dir = os.environ.get("LOCALAPPDATA", "") + r"\Programs\ThroughputTester"
+    bat = tmpdir / "run-update.bat"
+    bat.write_text(
+        "@echo off\r\n"
+        f':: wait for the running app (pid {pid}) to exit\r\n'
+        ':wait\r\n'
+        f'tasklist /FI "PID eq {pid}" | findstr /R /C:"{pid}" >nul 2>&1\r\n'
+        'if not errorlevel 1 ( timeout /t 1 /nobreak >nul & goto wait )\r\n'
+        f'start "" /wait "{target}" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /CURRENTUSER\r\n'
+        f'start "" "{install_dir}\\UDPThroughputTester.exe"\r\n',
+        encoding="ascii",
+    )
+    # Detach the bat so it survives our exit. On Windows, DETACHED_PROCESS
+    # + new console makes it independent.
+    DETACHED = 0x00000008
+    subprocess.Popen(
+        ["cmd.exe", "/c", str(bat)],
+        creationflags=DETACHED | subprocess.CREATE_NEW_PROCESS_GROUP,
+        close_fds=True,
+    )
+    # Tell the UI we kicked it off, then schedule our own exit.
+    def _bye():
+        time.sleep(1.0)
+        os._exit(0)
+    threading.Thread(target=_bye, daemon=True).start()
+    return jsonify({
+        "ok": True,
+        "downloaded": str(target),
+        "size": target.stat().st_size,
+        "message": "Update launching — this app will exit and reopen automatically.",
+    })
 
 
 # ---------------------------------------------------------------------------
