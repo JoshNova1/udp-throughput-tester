@@ -2,4 +2,7 @@
 # Install on top of requirements.txt:
 #   pip install -r requirements.txt -r requirements-desktop.txt
 pywebview==5.3.2
-pyinstaller==6.10.0
+# Allow any recent PyInstaller -- 6.10.0 was yanked from PyPI shortly after
+# the initial Windows build, breaking CI. Pin a floor + ceiling instead of
+# an exact version so we don't get bitten again if 6.15.0 vanishes too.
+pyinstaller>=6.15,<7
