@@ -75,21 +75,27 @@ function Test-HasWinget {
 
 # ----- Python detection / install -----------------------------------------
 function Get-PythonExe {
-    # Prefer the 'py' launcher -- it points at the real Python install, not
-    # the Microsoft Store app-execution-alias redirector that ships with
-    # modern Windows.
-    $py = Get-Command py -ErrorAction SilentlyContinue
-    if ($py) {
-        try {
-            $path = (& py -3 -c "import sys; print(sys.executable)" 2>&1).Trim()
-            if ($path -and (Test-Path $path)) { return $path }
-        } catch {}
-    }
-    # Fall back to bare 'python' on PATH -- but reject the Store alias which
-    # lives under WindowsApps and silently launches the Store on first use.
+    # Prefer `python` on PATH (rejecting the Microsoft Store app-execution-
+    # alias redirector that lives under WindowsApps). This is what
+    # actions/setup-python on GitHub Actions exposes, and it's also what
+    # most user installs put on PATH first.
     $python = Get-Command python -ErrorAction SilentlyContinue
     if ($python -and ($python.Source -notlike '*\WindowsApps\*')) {
         return $python.Source
+    }
+    # Fall back to the 'py' launcher -- but be aware that `py -3` picks the
+    # *highest* installed 3.x, which on the GHA runner image is 3.14 and
+    # breaks pythonnet (no wheels yet). Pin to 3.12 explicitly when we use
+    # the launcher; if 3.12 isn't installed it returns nothing and we fall
+    # through to the auto-install path.
+    $py = Get-Command py -ErrorAction SilentlyContinue
+    if ($py) {
+        foreach ($spec in @("-3.12", "-3.13", "-3.11", "-3")) {
+            try {
+                $path = (& py $spec -c "import sys; print(sys.executable)" 2>&1).Trim()
+                if ($path -and (Test-Path $path)) { return $path }
+            } catch {}
+        }
     }
     return $null
 }
