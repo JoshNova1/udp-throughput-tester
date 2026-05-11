@@ -112,18 +112,20 @@ code {
   z-index: 10;
 }
 .sidebar-brand {
-  display: flex; align-items: center; gap: 12px;
-  padding: 8px 10px 22px;
+  display: flex; flex-direction: column; align-items: center; gap: 8px;
+  padding: 16px 10px 22px;
   color: var(--text);
+  text-align: center;
 }
 .sidebar-brand .brand-mark {
-  width: 26px; height: 30px;
+  /* NCTech linear logo. The PNG is ~2.7:1 (white on transparent), so
+     give it most of the sidebar width and let height auto-scale. The
+     image is white pixels on transparent, which sits nicely on the
+     dark sidebar with no filter trickery needed. */
+  width: 175px; height: auto;
+  max-width: 100%;
   object-fit: contain;
   flex-shrink: 0;
-  /* Recolour any monochrome logo (dark navy on transparent, black on
-     transparent, etc.) to white so it stands out on the dark sidebar.
-     For a white logo PNG, remove this filter. */
-  filter: brightness(0) invert(1);
 }
 .brand-name {
   font-weight: 600; letter-spacing: -0.02em;
@@ -363,10 +365,16 @@ input:disabled { opacity: 0.5; cursor: not-allowed; }
   padding: 0 14px;
   border-radius: var(--r-md);
   font-size: 13px; font-weight: 500;
-  border: 1px solid transparent;
+  /* Default to ghost-style: subtle background + visible text on the dark
+     theme. Previously .btn had no colors which rendered as invisible
+     white-on-white (e.g. the Check-for-updates button). */
+  background: var(--bg-elev);
+  color: var(--text-soft);
+  border: 1px solid var(--border);
   cursor: pointer;
   transition: background var(--transition), border-color var(--transition), transform var(--transition);
 }
+.btn:hover:not(:disabled) { background: var(--bg-hover); border-color: var(--border-strong); color: var(--text); }
 .btn:active:not(:disabled) { transform: translateY(1px); }
 .btn:disabled { opacity: 0.45; cursor: not-allowed; }
 
