@@ -102,6 +102,76 @@ code {
   line-height: 1;
 }
 
+/* Slim progress bar (used inline in the Settings update card). */
+.progress {
+  height: 6px;
+  background: var(--bg-app);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  overflow: hidden;
+  margin-top: 6px;
+}
+.progress.big { height: 10px; margin-top: 14px; }
+.progress-bar {
+  height: 100%; width: 0%;
+  background: var(--accent);
+  transition: width 200ms ease;
+}
+
+/* Full-screen update overlay -- blocks interaction during install. */
+#update-overlay {
+  position: fixed; inset: 0; z-index: 9999;
+  background: rgba(8, 9, 10, 0.92);
+  display: flex; align-items: center; justify-content: center;
+  backdrop-filter: blur(4px);
+}
+.update-overlay-card {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 28px 32px;
+  min-width: 420px; max-width: 540px;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.5);
+}
+.update-overlay-title {
+  font-size: 18px; font-weight: 600;
+  margin-bottom: 6px;
+}
+.update-overlay-sub {
+  color: var(--text-soft);
+  font-size: 14px;
+  margin-bottom: 4px;
+}
+.update-overlay-note {
+  margin-top: 14px;
+}
+
+/* Toasts (top-right, auto-dismiss). */
+#toast-container {
+  position: fixed; top: 18px; right: 18px;
+  z-index: 10000;
+  display: flex; flex-direction: column; gap: 8px;
+  pointer-events: none;
+}
+.toast {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: 8px;
+  padding: 10px 14px;
+  font-size: 13px;
+  color: var(--text);
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.35);
+  animation: toast-in 200ms ease;
+  pointer-events: auto;
+  max-width: 360px;
+}
+.toast.success { border-left-color: #86efac; }
+@keyframes toast-in {
+  from { opacity: 0; transform: translateY(-8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
 /* ─── Layout ────────────────────────────────────────────────────────────── */
 .sidebar {
   position: fixed; inset: 0 auto 0 0; width: var(--sidebar-w);

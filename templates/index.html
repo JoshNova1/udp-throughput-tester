@@ -529,6 +529,10 @@
         <div id="update-action" style="margin-top:10px; display:none">
           <button id="update-install" class="btn btn-primary">Download &amp; install</button>
         </div>
+        <div id="update-progress-wrap" style="margin-top:10px; display:none">
+          <div id="update-progress-label" class="muted small">downloading…</div>
+          <div class="progress"><div id="update-progress-bar" class="progress-bar"></div></div>
+        </div>
       </div>
     </div>
 
@@ -539,6 +543,22 @@
   </section>
 
 </main>
+
+<!-- Full-screen overlay shown during an in-progress update. Blocks
+     interaction so the user knows the app is busy and will restart. -->
+<div id="update-overlay" style="display:none">
+  <div class="update-overlay-card">
+    <div class="update-overlay-title" id="update-overlay-title">Updating Throughput Tester</div>
+    <div class="update-overlay-sub" id="update-overlay-sub">Downloading installer…</div>
+    <div class="progress big"><div id="update-overlay-bar" class="progress-bar"></div></div>
+    <div class="update-overlay-note muted small" id="update-overlay-note">
+      The app will close and reopen automatically. Please don't close this window.
+    </div>
+  </div>
+</div>
+
+<!-- Toast for one-shot notifications (e.g. "Updated to v1.0.X"). -->
+<div id="toast-container"></div>
 
 <script src="/static/app.js"></script>
 </body>

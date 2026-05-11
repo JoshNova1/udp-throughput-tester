@@ -368,6 +368,11 @@ def api_status():
             # (Pi / Docker / bare-metal) update via git pull / docker
             # pull / apt; macOS desktop builds aren't published yet.
             "updater_supported": sys.platform == "win32",
+            # True for the FIRST /api/status call after a successful
+            # in-app update (consumed-on-read). UI uses this to show a
+            # one-shot "Updated to vX" toast.
+            "update_just_completed": _consume_just_updated(),
+            "previous_version": _UPDATED_FROM_VERSION,
         },
     })
 
@@ -892,80 +897,202 @@ def api_check_update():
     })
 
 
+# Module-level update state. Updated by the worker thread, polled by the UI.
+_UPDATE_STATE_LOCK = threading.Lock()
+_UPDATE_STATE: dict = {
+    "phase": "idle",          # idle | downloading | installing | error | done
+    "downloaded": 0,
+    "total": 0,
+    "message": "",
+    "error": None,
+}
+
+# "We just got updated" flag — written by the launcher script after a
+# successful install, read once at app boot, exposed in /api/status so the
+# UI can show a one-time "✓ Updated to vX" toast.
+import tempfile as _tempfile
+_UPDATE_TMP = Path(_tempfile.gettempdir()) / "throughput-tester-update"
+_UPDATE_FLAG = _UPDATE_TMP / "update-complete.flag"
+UPDATE_JUST_COMPLETED = False
+_UPDATED_FROM_VERSION = None
+if _UPDATE_FLAG.exists():
+    try:
+        _UPDATED_FROM_VERSION = _UPDATE_FLAG.read_text(encoding="ascii", errors="replace").strip()
+        UPDATE_JUST_COMPLETED = True
+        _UPDATE_FLAG.unlink()
+    except Exception:
+        pass
+
+
+def _consume_just_updated() -> bool:
+    """Return True once, then False thereafter — so /api/status fires the
+    'just-updated' toast only on the first poll after launch."""
+    global UPDATE_JUST_COMPLETED
+    if UPDATE_JUST_COMPLETED:
+        UPDATE_JUST_COMPLETED = False
+        return True
+    return False
+
+
+def _set_update_state(**kwargs) -> None:
+    with _UPDATE_STATE_LOCK:
+        _UPDATE_STATE.update(kwargs)
+
+
+def _get_update_state() -> dict:
+    with _UPDATE_STATE_LOCK:
+        return dict(_UPDATE_STATE)
+
+
+def _do_update_worker(asset_url: str, asset_name: str, asset_size: int) -> None:
+    """Worker thread: download installer with progress, launch the
+    update-runner PS1 in detached mode, exit the process."""
+    _UPDATE_TMP.mkdir(exist_ok=True)
+    target = _UPDATE_TMP / asset_name
+    log = _UPDATE_TMP / "update.log"
+    try:
+        with requests.get(asset_url, stream=True, timeout=300) as r:
+            r.raise_for_status()
+            cl = r.headers.get("Content-Length")
+            if cl:
+                try: asset_size = int(cl)
+                except ValueError: pass
+            _set_update_state(phase="downloading", downloaded=0,
+                              total=asset_size, message=f"Downloading {asset_name}")
+            downloaded = 0
+            with open(target, "wb") as f:
+                for chunk in r.iter_content(chunk_size=1 << 16):
+                    if not chunk:
+                        continue
+                    f.write(chunk)
+                    downloaded += len(chunk)
+                    _set_update_state(downloaded=downloaded)
+    except Exception as exc:
+        _set_update_state(phase="error",
+                          error=f"Download failed: {exc}",
+                          message="Download failed")
+        return
+
+    # Build the relauncher in PowerShell -- much more reliable than .bat for
+    # waiting on a PID (Win32 OpenProcess + WaitForExit) and for spawning a
+    # detached child. Also logs every step to update.log so we can debug.
+    import subprocess
+    pid = os.getpid()
+    install_dir = Path(os.environ.get("LOCALAPPDATA", "")) / "Programs" / "ThroughputTester"
+    new_exe = install_dir / "UDPThroughputTester.exe"
+    runner = _UPDATE_TMP / "run-update.ps1"
+    current_version = APP_VERSION
+    runner.write_text(f"""
+# Auto-generated update runner. Writes progress to update.log.
+$ErrorActionPreference = 'Continue'
+$log     = '{log}'
+$flag    = '{_UPDATE_FLAG}'
+$exePath = '{new_exe}'
+$setup   = '{target}'
+$oldPid  = {pid}
+$oldVer  = '{current_version}'
+
+function Log($msg) {{
+  $stamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss.fff'
+  Add-Content -Path $log -Value "[$stamp] $msg" -Encoding utf8
+}}
+
+Log "runner start (waiting for pid $oldPid)"
+$proc = Get-Process -Id $oldPid -ErrorAction SilentlyContinue
+if ($proc) {{
+  try {{ $proc.WaitForExit(60000) | Out-Null }} catch {{ Log "WaitForExit threw: $_" }}
+}}
+# Also wait for any other UDPThroughputTester instances to exit (loopback testing).
+$deadline = (Get-Date).AddSeconds(20)
+while ((Get-Process -Name 'UDPThroughputTester' -ErrorAction SilentlyContinue) -and ((Get-Date) -lt $deadline)) {{
+  Start-Sleep -Milliseconds 500
+}}
+
+Log "pid gone, launching installer"
+$psi = New-Object System.Diagnostics.ProcessStartInfo
+$psi.FileName = $setup
+$psi.Arguments = '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /CURRENTUSER'
+$psi.UseShellExecute = $false
+$psi.RedirectStandardOutput = $true
+$psi.RedirectStandardError  = $true
+$p = [System.Diagnostics.Process]::Start($psi)
+$p.WaitForExit()
+Log "installer exited $($p.ExitCode)"
+
+Start-Sleep -Seconds 2
+
+if (Test-Path $exePath) {{
+  Log "writing flag + relaunching $exePath"
+  Set-Content -Path $flag -Value $oldVer -Encoding ascii
+  Start-Process -FilePath $exePath
+  Log "relaunch issued"
+}} else {{
+  Log "ERROR: new exe missing at $exePath"
+}}
+""", encoding="utf-8")
+
+    _set_update_state(phase="installing",
+                      message="Installer launching — app will restart")
+    DETACHED = 0x00000008
+    subprocess.Popen(
+        ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass",
+         "-WindowStyle", "Hidden", "-File", str(runner)],
+        creationflags=DETACHED | subprocess.CREATE_NEW_PROCESS_GROUP,
+        close_fds=True,
+    )
+    # Give the runner ~2s to spin up and start waiting on our PID, then
+    # exit so it can proceed.
+    time.sleep(2.0)
+    os._exit(0)
+
+
+@app.route("/api/update-progress")
+def api_update_progress():
+    return jsonify(_get_update_state())
+
+
 @app.route("/api/install-update", methods=["POST"])
 def api_install_update():
-    """Download the latest Setup.exe and launch it silently. The running
-    app then exits so Inno can replace its files; the installer's
-    post-install [Run] entry relaunches the new exe."""
+    """Kick off the update. Returns immediately. Progress is reported via
+    /api/update-progress; the app exits ~2s after the installer is
+    launched and reopens itself once the new binaries are in place."""
     if "REPLACE_ME" in GITHUB_REPO:
         return jsonify({"error": "Update repo not configured"}), 400
+
+    state = _get_update_state()
+    if state["phase"] in ("downloading", "installing"):
+        return jsonify({"error": "Update already in progress",
+                        "state": state}), 409
+
     try:
         rel = _latest_release()
     except requests.RequestException as exc:
         return jsonify({"error": f"Could not fetch release: {exc}"}), 502
 
-    asset_url = None
-    asset_name = None
+    asset_url = asset_name = None
+    asset_size = 0
     for a in rel.get("assets", []):
         name = a.get("name", "")
         if name.lower().endswith(".exe") and "setup" in name.lower():
             asset_url = a.get("browser_download_url")
             asset_name = name
+            asset_size = int(a.get("size") or 0)
             break
     if not asset_url:
         return jsonify({"error": "No Setup.exe asset in latest release"}), 404
 
-    import tempfile
-    tmpdir = Path(tempfile.gettempdir()) / "throughput-tester-update"
-    tmpdir.mkdir(exist_ok=True)
-    target = tmpdir / asset_name
-
-    try:
-        with requests.get(asset_url, stream=True, timeout=120) as r:
-            r.raise_for_status()
-            with open(target, "wb") as f:
-                for chunk in r.iter_content(chunk_size=1 << 16):
-                    if chunk:
-                        f.write(chunk)
-    except requests.RequestException as exc:
-        return jsonify({"error": f"Download failed: {exc}"}), 502
-
-    # Launch installer detached and exit. The launcher .bat is the cleanest
-    # way to (a) wait for the current pid to die so Inno doesn't have to
-    # CloseApplications, (b) run the installer silently, (c) relaunch the
-    # new exe afterwards (which Inno's skipifsilent would otherwise prevent).
-    import subprocess, sys
-    pid = os.getpid()
-    install_dir = os.environ.get("LOCALAPPDATA", "") + r"\Programs\ThroughputTester"
-    bat = tmpdir / "run-update.bat"
-    bat.write_text(
-        "@echo off\r\n"
-        f':: wait for the running app (pid {pid}) to exit\r\n'
-        ':wait\r\n'
-        f'tasklist /FI "PID eq {pid}" | findstr /R /C:"{pid}" >nul 2>&1\r\n'
-        'if not errorlevel 1 ( timeout /t 1 /nobreak >nul & goto wait )\r\n'
-        f'start "" /wait "{target}" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /CURRENTUSER\r\n'
-        f'start "" "{install_dir}\\UDPThroughputTester.exe"\r\n',
-        encoding="ascii",
-    )
-    # Detach the bat so it survives our exit. On Windows, DETACHED_PROCESS
-    # + new console makes it independent.
-    DETACHED = 0x00000008
-    subprocess.Popen(
-        ["cmd.exe", "/c", str(bat)],
-        creationflags=DETACHED | subprocess.CREATE_NEW_PROCESS_GROUP,
-        close_fds=True,
-    )
-    # Tell the UI we kicked it off, then schedule our own exit.
-    def _bye():
-        time.sleep(1.0)
-        os._exit(0)
-    threading.Thread(target=_bye, daemon=True).start()
+    _set_update_state(phase="downloading", downloaded=0,
+                      total=asset_size, message="Starting download",
+                      error=None)
+    threading.Thread(
+        target=_do_update_worker,
+        args=(asset_url, asset_name, asset_size),
+        daemon=True,
+    ).start()
     return jsonify({
         "ok": True,
-        "downloaded": str(target),
-        "size": target.stat().st_size,
-        "message": "Update launching — this app will exit and reopen automatically.",
+        "message": "Update started — poll /api/update-progress",
+        "total": asset_size,
     })
 
 

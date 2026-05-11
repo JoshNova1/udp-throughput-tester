@@ -315,6 +315,14 @@ const loadConfig = async () => {
     ve.textContent = repo && !repo.includes("REPLACE_ME")
       ? `${v} (${repo})` : v;
   }
+  // One-shot "✓ Updated to vX" toast, fired the first time /api/status
+  // is hit after a successful in-app update (the backend consumes the
+  // flag on read, so subsequent polls return false).
+  if (state.app.update_just_completed) {
+    const prev = state.app.previous_version
+      ? ` from ${state.app.previous_version}` : "";
+    showToast(`✓ Updated to ${state.app.version}${prev}`, "success", 8000);
+  }
   // Hide the in-app updater on platforms where Setup.exe doesn't apply
   // (Linux / Docker / macOS) -- those update via apt / git / docker pull.
   const updateCheckBtn = document.getElementById("update-check");
@@ -903,18 +911,100 @@ $("update-check").addEventListener("click", async () => {
     setUpdateStatus("check failed: " + e.message, "error");
   }
 });
+// Toast helper -- auto-dismisses after timeout ms.
+const showToast = (msg, kind, timeout = 6000) => {
+  const wrap = document.getElementById("toast-container");
+  if (!wrap) return;
+  const el = document.createElement("div");
+  el.className = "toast" + (kind ? ` ${kind}` : "");
+  el.textContent = msg;
+  wrap.appendChild(el);
+  setTimeout(() => el.remove(), timeout);
+};
+
+// Full-screen overlay used during the install phase.
+const showUpdateOverlay = (show) => {
+  const ov = document.getElementById("update-overlay");
+  if (ov) ov.style.display = show ? "flex" : "none";
+};
+const setOverlayProgress = (phase, downloaded, total, message) => {
+  const titleEl = document.getElementById("update-overlay-title");
+  const subEl   = document.getElementById("update-overlay-sub");
+  const barEl   = document.getElementById("update-overlay-bar");
+  const noteEl  = document.getElementById("update-overlay-note");
+  const inlineBar   = document.getElementById("update-progress-bar");
+  const inlineLabel = document.getElementById("update-progress-label");
+  const wrap = document.getElementById("update-progress-wrap");
+  if (wrap) wrap.style.display = "";
+  const pct = total > 0 ? Math.min(100, Math.round(100 * downloaded / total)) : 0;
+  if (barEl) barEl.style.width = pct + "%";
+  if (inlineBar) inlineBar.style.width = pct + "%";
+  const human = (b) => (b / 1024 / 1024).toFixed(1) + " MB";
+  let summary = message || phase;
+  if (phase === "downloading" && total) {
+    summary = `Downloading ${human(downloaded)} / ${human(total)} (${pct}%)`;
+  } else if (phase === "installing") {
+    summary = "Installing — the app will close and reopen…";
+  }
+  if (subEl) subEl.textContent = summary;
+  if (inlineLabel) inlineLabel.textContent = summary;
+  if (titleEl) titleEl.textContent =
+    phase === "installing" ? "Installing update" : "Downloading update";
+  if (noteEl) {
+    noteEl.textContent = phase === "installing"
+      ? "The app will close and reopen automatically. Don't close this window."
+      : "This usually takes 5–15 seconds on a fast connection.";
+  }
+};
+
+// Poll /api/update-progress every 400ms while installing.
+let updatePollHandle = null;
+const startUpdatePolling = () => {
+  if (updatePollHandle) return;
+  updatePollHandle = setInterval(async () => {
+    try {
+      const r = await fetch("/api/update-progress");
+      const s = await r.json();
+      setOverlayProgress(s.phase, s.downloaded, s.total, s.message);
+      if (s.phase === "error") {
+        clearInterval(updatePollHandle); updatePollHandle = null;
+        showUpdateOverlay(false);
+        $("update-install").disabled = false;
+        setUpdateStatus("Update failed: " + (s.error || s.message), "error");
+        showToast("Update failed: " + (s.error || s.message), null, 10000);
+      }
+      // When phase=installing, the app is about to exit. The next poll
+      // will throw -- the catch below treats that as "we're restarting".
+    } catch (e) {
+      // Network error = app is exiting for the installer. That's the
+      // normal happy path; switch the overlay to a final "restarting" state.
+      clearInterval(updatePollHandle); updatePollHandle = null;
+      const title = document.getElementById("update-overlay-title");
+      const sub   = document.getElementById("update-overlay-sub");
+      const bar   = document.getElementById("update-overlay-bar");
+      const note  = document.getElementById("update-overlay-note");
+      if (title) title.textContent = "Restarting…";
+      if (sub)   sub.textContent   = "Installer is running. The new version will open in a few seconds.";
+      if (bar)   { bar.style.width = "100%"; }
+      if (note)  note.textContent = "You can safely close this window if it doesn't auto-close.";
+    }
+  }, 400);
+};
+
 $("update-install").addEventListener("click", async () => {
   if (!confirm("Download and install the update? The app will close and "
              + "reopen automatically.")) return;
-  setUpdateStatus("downloading…");
   $("update-install").disabled = true;
+  showUpdateOverlay(true);
+  setOverlayProgress("downloading", 0, 0, "Starting download…");
   try {
     const r = await fetch("/api/install-update", { method: "POST" });
     const j = await r.json();
     if (j.ok) {
-      setUpdateStatus("Installer launched — closing app…", "ok");
+      startUpdatePolling();
     } else {
       setUpdateStatus(j.error || "install failed", "error");
+      showUpdateOverlay(false);
       $("update-install").disabled = false;
     }
   } catch (e) {
