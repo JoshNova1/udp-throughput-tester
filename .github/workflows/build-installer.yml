@@ -62,10 +62,30 @@ jobs:
       - name: Build installer
         shell: pwsh
         run: |
-          deploy\build-windows.bat `
+          # Call build-installer.ps1 directly (skip the .bat wrapper) so
+          # quoting / arg-forwarding is one layer thinner. Surface the
+          # exit code explicitly because pwsh sometimes swallows it
+          # through .bat indirection.
+          $ErrorActionPreference = 'Stop'
+          pwsh -NoProfile -ExecutionPolicy Bypass -File deploy\build-installer.ps1 `
             -SkipBinaries `
             -Version "${{ steps.ver.outputs.version }}" `
             -Repo "${{ github.repository }}"
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "build-installer.ps1 exited with code $LASTEXITCODE"
+            exit $LASTEXITCODE
+          }
+
+      - name: Dump build artefacts on failure (debug aid)
+        if: failure()
+        shell: pwsh
+        run: |
+          Write-Host "===== dist\ ====="; Get-ChildItem dist -Recurse -ErrorAction SilentlyContinue | Format-Table FullName, Length
+          Write-Host "===== build\ ====="; Get-ChildItem build -Recurse -ErrorAction SilentlyContinue -Depth 2 | Format-Table FullName, Length
+          Write-Host "===== bin\ ====="; Get-ChildItem bin -ErrorAction SilentlyContinue | Format-Table Name, Length
+          Write-Host "===== _buildinfo.py ====="; Get-Content _buildinfo.py -ErrorAction SilentlyContinue
+          $warn = "build\desktop\warn-desktop.txt"
+          if (Test-Path $warn) { Write-Host "===== PyInstaller warnings ====="; Get-Content $warn }
 
       - name: Verify + publish stable-named copy
         shell: pwsh
