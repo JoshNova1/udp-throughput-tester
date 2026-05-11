@@ -37,6 +37,19 @@ def _pick_free_port() -> int:
     return port
 
 
+def _port_is_free(port: int) -> bool:
+    """Try to bind on all interfaces so we know nothing else is listening."""
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    try:
+        s.bind(("0.0.0.0", port))
+        return True
+    except OSError:
+        return False
+    finally:
+        s.close()
+
+
 def _prepend_to_path(d: Path) -> None:
     """Make bundled binaries (ffmpeg, iperf3, srt-live-transmit) discoverable."""
     if d.exists():
@@ -69,11 +82,19 @@ def main() -> int:
         os.environ["DATA_DIR"] = str(data_dir)
         (data_dir / "clips").mkdir(parents=True, exist_ok=True)
 
-    # Pick a port and start Flask in a background thread. Honour PORT if
-    # the caller pre-set it (lets you pin a fixed port for loopback testing
-    # or for the peer-handshake URL to be predictable); otherwise grab a
-    # random free port so multiple instances coexist.
-    port = int(os.environ.get("PORT") or _pick_free_port())
+    # Pick a port. Priority order:
+    #   1. caller-set $env:PORT (loopback testing pins to 8080 this way)
+    #   2. 8080 if it's free — matches DEFAULT peer_api_port everywhere so
+    #      a second machine on the LAN can hit this host's API by IP alone
+    #   3. a random free port (last-resort, e.g. when the user already has
+    #      another instance running for loopback)
+    env_port = os.environ.get("PORT")
+    if env_port:
+        port = int(env_port)
+    elif _port_is_free(8080):
+        port = 8080
+    else:
+        port = _pick_free_port()
     os.environ["PORT"] = str(port)
 
     # Ensure cwd is the resources dir so Flask finds templates/, static/.
@@ -82,9 +103,15 @@ def main() -> int:
     # Late-import to make sure env vars are set before app.py reads them.
     import app as flask_app
 
+    # Bind on all interfaces so a peer on the LAN can hit /api/peer/listen
+    # for the handshake. The pywebview window still loads via 127.0.0.1.
+    # Windows Defender will prompt on first launch -- click "Allow on
+    # private networks". (Inno's optional firewall task pre-authorises
+    # this when installed with admin privileges; per-user installs get
+    # the runtime prompt instead.)
     server_thread = threading.Thread(
         target=lambda: flask_app.app.run(
-            host="127.0.0.1", port=port, threaded=True,
+            host="0.0.0.0", port=port, threaded=True,
             use_reloader=False, debug=False,
         ),
         daemon=True,
