@@ -131,7 +131,7 @@ def main() -> int:
     # Now open the native window.
     import webview  # pywebview
     webview.create_window(
-        title="Throughput Tester — Nova Connect",
+        title="Throughput Tester — NCTech",
         url=f"http://127.0.0.1:{port}",
         width=1240, height=900,
         min_size=(900, 600),

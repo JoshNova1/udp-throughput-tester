@@ -70,7 +70,7 @@ exe = EXE(
     strip=False,
     upx=True,
     console=False,           # GUI app, no console window on Windows
-    icon=None,               # add an .ico here if you have branding
+    icon=str(HERE / "deploy" / "nctech.ico") if (HERE / "deploy" / "nctech.ico").exists() else None,
 )
 
 coll = COLLECT(

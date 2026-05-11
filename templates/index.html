@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Throughput Tester — Nova Connect</title>
-<link rel="icon" type="image/svg+xml" href="/static/images/nova-connect-mark.svg" />
+<title>Throughput Tester — NCTech</title>
+<link rel="icon" type="image/png" href="/static/images/nctech-white.png" />
 <link rel="preconnect" href="https://rsms.me/">
 <link rel="stylesheet" href="https://rsms.me/inter/inter.css">
 <link rel="stylesheet" href="/static/style.css" />
@@ -16,13 +16,12 @@
 <aside class="sidebar">
   <div class="sidebar-brand">
     <img class="brand-mark"
-         src="/static/images/nova-connect.png"
-         onerror="this.onerror=null;this.src='/static/images/nova-connect.jpg';this.onerror=function(){this.onerror=null;this.src='/static/images/nova-connect-mark.svg';}"
-         alt="Nova Connect"
+         src="/static/images/nctech-white.png"
+         alt="NCTech"
          aria-hidden="true" />
     <div>
       <div class="brand-name">Throughput Tester</div>
-      <div class="brand-sub">by Nova Connect</div>
+      <div class="brand-sub">by NCTech</div>
     </div>
   </div>
 
@@ -42,6 +41,7 @@
     <a href="#settings" data-view="settings" class="nav-item">
       <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
       Settings
+      <span id="update-badge" class="update-badge" style="display:none" title="Update available">●</span>
     </a>
   </nav>
 
@@ -157,7 +157,10 @@
         </div>
         <div class="field file-only" style="display:none">
           <label>Clip</label>
-          <select id="source-file"><option value="">— pick a file —</option></select>
+          <div style="display:flex; gap:8px; align-items:center">
+            <select id="source-file" style="flex:1"><option value="">— pick a file —</option></select>
+            <button id="source-file-browse" type="button" class="btn" title="Open file picker">Browse…</button>
+          </div>
         </div>
         <div class="field-row testpattern-only">
           <div class="field">
@@ -235,7 +238,7 @@
       </div>
     </div>
 
-    <!-- Receiver-only: listening panel -->
+    <!-- Receiver-only: listening / connected panel -->
     <div class="receiver-panel" id="receiver-panel" style="display:none">
       <div class="card big">
         <div class="receiver-state" id="receiver-state">
@@ -243,7 +246,7 @@
             <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12h2"/><path d="M20 12h2"/><circle cx="12" cy="12" r="3"/></svg>
           </div>
           <div>
-            <div class="receiver-title">Listening for inbound tests</div>
+            <div class="receiver-title" id="receiver-title">Listening for inbound tests</div>
             <div class="receiver-sub" id="receiver-sub">No connection yet. Trigger a test from the sender node.</div>
           </div>
         </div>

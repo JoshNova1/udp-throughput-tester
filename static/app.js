@@ -263,6 +263,35 @@ const refreshClipInfo = () => {
     : "No clip selected.";
 };
 
+// Browse... button — opens a native Open-File dialog via pywebview,
+// copies the chosen file into CLIPS_DIR, refreshes the dropdown, and
+// selects the new entry.
+const browseBtn = document.getElementById("source-file-browse");
+if (browseBtn) {
+  browseBtn.addEventListener("click", async () => {
+    browseBtn.disabled = true;
+    browseBtn.textContent = "Opening…";
+    try {
+      const r = await fetch("/api/pick-clip", { method: "POST" });
+      const j = await r.json();
+      if (!r.ok) {
+        alert("Picker failed: " + (j.error || r.status));
+      } else if (!j.cancelled && j.name) {
+        await refreshClips();
+        $("source-file").value = j.name;
+        ui.sourceFile = j.name;
+        saveUI();
+        refreshClipInfo();
+      }
+    } catch (e) {
+      alert("Picker error: " + e.message);
+    } finally {
+      browseBtn.disabled = false;
+      browseBtn.textContent = "Browse…";
+    }
+  });
+}
+
 // ─── Config ─────────────────────────────────────────────────────────────────
 const loadConfig = async () => {
   const [cfg, status, role] = await Promise.all([
@@ -285,6 +314,21 @@ const loadConfig = async () => {
     const repo = state.app.repo || "";
     ve.textContent = repo && !repo.includes("REPLACE_ME")
       ? `${v} (${repo})` : v;
+  }
+  // Hide the in-app updater on platforms where Setup.exe doesn't apply
+  // (Linux / Docker / macOS) -- those update via apt / git / docker pull.
+  const updateCheckBtn = document.getElementById("update-check");
+  if (updateCheckBtn) {
+    const supported = state.app.updater_supported;
+    updateCheckBtn.style.display = supported ? "" : "none";
+    if (!supported) {
+      const status = document.getElementById("update-status");
+      if (status) {
+        status.textContent =
+          `Auto-updater is Windows-only. On ${state.app.platform} update via ` +
+          `git pull / docker pull / apt as appropriate.`;
+      }
+    }
   }
 
   // Top bar
@@ -403,7 +447,10 @@ const connect = () => {
       state.lastByStream = {};
       setStatus(`running · ${m.mode} · role=${m.role} · streams=${m.streams || 1}`, "running");
       if (m.role === "receiver" && state.role !== "sender") {
-        $("receiver-sub").textContent = `Inbound test: ${m.mode} on port ${m.params?.port || "?"}`;
+        $("receiver-title").textContent =
+          `Connected — receiving ${m.mode} stream`;
+        $("receiver-sub").textContent =
+          `${m.streams || 1} stream(s) on port ${m.params?.port || "?"}`;
         document.querySelector("#recv-indicator").classList.remove("idle");
         document.querySelector("#recv-indicator").classList.add("active", "pulse");
       }
@@ -582,6 +629,13 @@ const handleDone = (m) => {
   else setStatus("done · last run completed", "done");
   document.querySelector("#recv-indicator").classList.remove("active");
   document.querySelector("#recv-indicator").classList.add("pulse");
+  // Receiver: revert to idle state once the test has completed.
+  if (state.role !== "sender") {
+    const t = document.getElementById("receiver-title");
+    const sub = document.getElementById("receiver-sub");
+    if (t) t.textContent = "Listening for inbound tests";
+    if (sub) sub.textContent = "Last test completed. Ready for the next one.";
+  }
   // refresh results if user is on that view
   if (!document.querySelector('[data-view="results"]').hidden) refreshResults();
 };
@@ -800,6 +854,30 @@ const showInstallBtn = (show) => {
   $("update-action").style.display = show ? "" : "none";
 };
 let pendingAssetUrl = null;
+const setUpdateBadge = (show) => {
+  const b = document.getElementById("update-badge");
+  if (b) b.style.display = show ? "" : "none";
+};
+// Silent background check on startup (and once an hour after), so users
+// land on a Settings tab with the orange dot already telling them an
+// update exists -- no manual "Check for updates" click needed.
+const silentUpdateCheck = async () => {
+  if (!state.app || !state.app.updater_supported) return;
+  try {
+    const r = await fetch("/api/check-update");
+    const j = await r.json();
+    if (j.status === "update-available") {
+      setUpdateBadge(true);
+      // Also pre-populate the Settings panel so the user lands ready.
+      setUpdateStatus(j.message + (j.asset_size
+        ? ` (${(j.asset_size / 1024 / 1024).toFixed(1)} MB)` : ""), "ok");
+      pendingAssetUrl = j.asset_url;
+      showInstallBtn(Boolean(j.asset_url));
+    } else {
+      setUpdateBadge(false);
+    }
+  } catch { /* silent */ }
+};
 $("update-check").addEventListener("click", async () => {
   setUpdateStatus("checking…");
   showInstallBtn(false);
@@ -811,10 +889,15 @@ $("update-check").addEventListener("click", async () => {
         ? ` (${(j.asset_size / 1024 / 1024).toFixed(1)} MB)` : ""), "ok");
       pendingAssetUrl = j.asset_url;
       showInstallBtn(Boolean(j.asset_url));
+      setUpdateBadge(true);
     } else if (j.status === "up-to-date") {
       setUpdateStatus(j.message, "ok");
+    } else if (j.status === "up-to-date") {
+      setUpdateStatus(j.message, "ok");
+      setUpdateBadge(false);
     } else {
       setUpdateStatus(j.message || j.status, "error");
+      setUpdateBadge(false);
     }
   } catch (e) {
     setUpdateStatus("check failed: " + e.message, "error");
@@ -876,6 +959,11 @@ const boot = async () => {
   await refreshClips();
   refreshClipInfo();
   router.go(location.hash.slice(1) || "test");
+  // Quietly check for app updates on boot + once an hour. Surfaces an
+  // orange dot on the Settings nav item if a newer release exists; the
+  // user can then click through to Settings to install.
+  silentUpdateCheck();
+  setInterval(silentUpdateCheck, 60 * 60 * 1000);
   // periodic refresh of node status
   setInterval(async () => {
     try {

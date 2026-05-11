@@ -10,9 +10,9 @@
 ; the firewall rule and the per-machine install via the wizard.
 ; ===========================================================================
 
-#define AppName       "Nova Connect Throughput Tester"
+#define AppName       "NCTech Throughput Tester"
 #define AppShortName  "ThroughputTester"
-#define AppPublisher  "Nova Connect"
+#define AppPublisher  "NCTech"
 ; AppVersion can be overridden from the build script:
 ;     ISCC.exe /DAppVersion=1.2.3 installer.iss
 ; The CI workflow passes the auto-derived 1.0.<commit-count> here so the
@@ -58,18 +58,10 @@ RestartApplications=no
 UninstallDisplayIcon={app}\{#AppExeName}
 UninstallDisplayName={#AppName} {#AppVersion}
 
-; Modern look. Set the line below to point at a .ico file to brand the
-; installer; comment it out to use Inno Setup's default. To generate one
-; from the Nova Connect mark:
-;
-;   magick -density 256 -background none -resize 256x256 ^
-;          ..\static\images\nova-connect-mark.svg ^
-;          nova-connect.ico
-;
-; (ImageMagick on Windows: choco install imagemagick or download from
-; imagemagick.org. Or use any SVG-to-ICO online converter.)
-#if FileExists("nova-connect.ico")
-  SetupIconFile=nova-connect.ico
+; Multi-resolution NCTech icon (generated from the brand PNG by Pillow,
+; committed under deploy\nctech.ico).
+#if FileExists("nctech.ico")
+  SetupIconFile=nctech.ico
 #endif
 WizardImageFile=
 WizardSmallImageFile=
