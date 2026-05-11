@@ -765,10 +765,20 @@ const refreshSettings = () => {
   // Environment checklist
   const tools = state.toolsAvailable;
   const enc = state.encoders;
+  // srt-live-transmit isn't shipped on Windows (no upstream binary).
+  // SRT mode still works via ffmpeg's bundled libsrt -- mark it neutral,
+  // not "bad", so users don't think their install is broken.
   const rows = [
-    ...Object.entries(tools).map(([k, v]) => ({
-      name: k, ok: v, kind: v ? "installed" : "not found",
-    })),
+    ...Object.entries(tools).map(([k, v]) => {
+      if (k === "srt-live-transmit" && !v) {
+        return {
+          name: k,
+          ok: true,                                    // neutral, not red
+          kind: "using ffmpeg libsrt fallback",
+        };
+      }
+      return { name: k, ok: v, kind: v ? "installed" : "not found" };
+    }),
     { name: "h264_v4l2m2m (Pi 4 HW encoder)", ok: !!enc.h264_v4l2m2m, kind: enc.h264_v4l2m2m ? "available" : "absent" },
     { name: "clips directory", ok: true, kind: state.clipsDir || "—" },
   ];
