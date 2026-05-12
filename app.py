@@ -1173,26 +1173,26 @@ if (Test-Path $exePath) {{
 
     _set_update_state(phase="installing",
                       message="Installer launching — app will restart")
-    DETACHED = 0x00000008
-    _si = subprocess.STARTUPINFO()
-    _si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-    _si.wShowWindow = subprocess.SW_HIDE
-    # Explicit DEVNULL on all three std handles: the parent is a windowless
-    # GUI with invalid console handles. If we let the detached PowerShell
-    # inherit them it dies on its first stdout write -- which is exactly
-    # what was happening (the runner script never wrote its first log line
-    # despite Popen returning success).
+    # CREATE_NO_WINDOW: suppress the console window (the parent is a
+    # windowless GUI). CREATE_NEW_PROCESS_GROUP: child outlives the parent's
+    # os._exit(0) below in its own group.
+    #
+    # DO NOT add DETACHED_PROCESS here. DETACHED_PROCESS forces the child to
+    # have no console, which powershell.exe cannot survive: it silently exits
+    # 0 without executing the -File script. This was the actual reason the
+    # in-app updater was failing -- not the inherited console handles, not
+    # the missing DEVNULL. Popen returned a live pid, PS died immediately
+    # without writing a single line to update.log, the installer never ran,
+    # the user's app closed and didn't come back. CREATE_NO_WINDOW alone
+    # suppresses the window without breaking PS, and DEVNULL std handles
+    # belt-and-braces the inherited-handle theory away too.
     subprocess.Popen(
         ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass",
          "-WindowStyle", "Hidden", "-File", str(runner)],
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
-        creationflags=(
-            DETACHED
-            | subprocess.CREATE_NEW_PROCESS_GROUP
-        ),
-        startupinfo=_si,
+        creationflags=subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP,
         close_fds=True,
     )
     # Give the runner ~2s to spin up and start waiting on our PID, then
