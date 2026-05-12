@@ -85,9 +85,16 @@ DEFAULTS = {
     "soak_duration_s":     60,
     "soak_ratio":          0.95,
     "step_mbps":           1.0,
-    "loss_pct_max":        0.5,
-    "rtt_ms_max":          250.0,
-    "deliver_pct_min":     90.0,
+    # Defaults tuned for real WAN (bonded Starlink, mobile, etc.) rather
+    # than a LAN diagnostic. The cross-machine loss measurement combines
+    # two cumulative ffmpeg byte counters with slightly different time
+    # windows, so a couple % of measurement noise is normal; a sub-1%
+    # threshold was always going to reject probes that real users would
+    # call "fine". RTT is the ping under load -- Starlink baseline is
+    # 30-80 ms but spikes to 200+ during obstructions / handovers.
+    "loss_pct_max":        5.0,
+    "rtt_ms_max":          400.0,
+    "deliver_pct_min":     85.0,
     "max_attempts":        20,
     "settle_s":            1.0,
 }
@@ -261,25 +268,40 @@ class AutoTestSender(Runner):
             ping_thread.join(timeout=2)
             time.sleep(0.6)  # peer's on_done -> history INSERT settles
 
-            # Fetch the receiver's view of this probe so we can compare what
-            # was actually delivered vs what we attempted to send. ffmpeg-
-            # native gives us the cumulative average bitrate on both ends;
-            # subtracting yields a real packet-loss approximation that we
-            # otherwise lost when dropping srt-live-transmit.
+            # Fetch the receiver's view of this probe to compare what was
+            # actually delivered vs what we attempted to send. Prefer the
+            # cumulative byte counter divided by the probe duration --
+            # cross-machine byte counts align cleanly (both monotonic, both
+            # zero at start) whereas ffmpeg's cumulative bitrate spans each
+            # side's slightly different run window and adds a few % of
+            # noise to the loss calc.
             recv_mbps_total: Optional[float] = None
             try:
                 hist_url = f"http://{peer}:{peer_api_port}/api/history?limit=1"
                 rh = requests.get(hist_url, timeout=5).json()
                 if rh and isinstance(rh, list):
                     rec_summary = rh[0].get("summary", {}) or {}
-                    totals = [
-                        (v or {}).get("throughput_mbps")
+                    byte_totals = [
+                        (v or {}).get("bytes_total")
                         for v in rec_summary.values()
                         if isinstance(v, dict)
                     ]
-                    totals = [t for t in totals if t is not None]
-                    if totals:
-                        recv_mbps_total = round(sum(totals), 2)
+                    byte_totals = [b for b in byte_totals if b]
+                    if byte_totals and duration_s:
+                        recv_mbps_total = round(
+                            sum(byte_totals) * 8 / 1_000_000 / duration_s, 2,
+                        )
+                    else:
+                        # Fallback: older receivers without bytes_total still
+                        # report throughput_mbps directly.
+                        mbps_totals = [
+                            (v or {}).get("throughput_mbps")
+                            for v in rec_summary.values()
+                            if isinstance(v, dict)
+                        ]
+                        mbps_totals = [t for t in mbps_totals if t is not None]
+                        if mbps_totals:
+                            recv_mbps_total = round(sum(mbps_totals), 2)
             except Exception:
                 recv_mbps_total = None
 
@@ -307,21 +329,20 @@ class AutoTestSender(Runner):
                     continue
                 sent      = max((s.get("pktSentTotal") or 0)     for s in useful)
                 lost      = max((s.get("pktSndLossTotal") or 0)  for s in useful)
-                bytes_max = max((s.get("byteSent") or 0)         for s in useful)
+                bytes_slt = max((s.get("byteSent") or 0)         for s in useful)
+                bytes_ff  = (senders[i].summary or {}).get("bytes_total") or 0
+                bytes_max = max(bytes_slt, bytes_ff)
                 rates     = [s.get("mbpsSendRate") for s in useful if s.get("mbpsSendRate")]
                 rtts      = [s.get("msRTT") for s in useful if s.get("msRTT")]
-                # Throughput computation depends on which pipeline produced
-                # the samples:
-                #   ffmpeg-native:  mbpsSendRate IS the running cumulative
-                #                   average bitrate from ffmpeg -stats; the
-                #                   last sample is the test's overall mean,
-                #                   so averaging (or even using max) is
-                #                   meaningful.
-                #   slt path:       mbpsSendRate is an instant rate over the
-                #                   inter-packet interval (noisy); use the
-                #                   integral byteSent/duration instead.
-                if bytes_max:
-                    true_mbps = round((bytes_max * 8 / 1_000_000) / duration_s, 2) if duration_s else 0.0
+                # Throughput: prefer the cumulative-bytes-over-duration
+                # integral because it's the same metric we compare against
+                # on the receiver side (bytes/duration). The ffmpeg path
+                # gives us bytes_total via the size= field in `-stats`;
+                # the slt path gave us byteSent in its JSON. Either way
+                # both ends use the same units now and the loss
+                # subtraction has no measurement-window asymmetry.
+                if bytes_max and duration_s:
+                    true_mbps = round((bytes_max * 8 / 1_000_000) / duration_s, 2)
                 elif rates:
                     true_mbps = round(sum(rates) / len(rates), 2)
                 else:

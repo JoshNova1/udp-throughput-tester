@@ -84,6 +84,23 @@ _FF_PROGRESS_RE = re.compile(
     re.IGNORECASE,
 )
 
+# ffmpeg also reports cumulative size in the same line:  "size=12345KiB"
+# (or MiB/GiB for longer runs). Capturing that monotonic byte counter is
+# more reliable for cross-machine loss calculation than the cumulative
+# bitrate, because byte counts don't depend on each side's clock window.
+_FF_SIZE_RE = re.compile(
+    r"size=\s*(?P<size>[\d.]+)\s*(?P<unit>[kKmMgG])?iB",
+    re.IGNORECASE,
+)
+
+
+def _ff_size_to_bytes(value: float, unit: str) -> int:
+    u = (unit or "").lower()
+    if u == "k": return int(value * 1024)
+    if u == "m": return int(value * 1024 * 1024)
+    if u == "g": return int(value * 1024 * 1024 * 1024)
+    return int(value)
+
 
 def _ff_bitrate_to_mbps(value: float, unit: str) -> float:
     u = unit.lower()
@@ -310,10 +327,14 @@ class SrtSender(Runner):
         assert self._proc.stdout is not None
         sample_count = {"n": 0}
         last_mbps = 0.0
+        last_bytes = 0
         for raw in self._proc.stdout:
             if self._stopping:
                 break
             self.log(raw, tag="ffmpeg")
+            sm = _FF_SIZE_RE.search(raw)
+            if sm:
+                last_bytes = _ff_size_to_bytes(float(sm.group("size")), sm.group("unit"))
             m = _FF_PROGRESS_RE.search(raw)
             if not m:
                 continue
@@ -334,6 +355,7 @@ class SrtSender(Runner):
         # the receiver-side can be queried via /api/history and the auto-
         # test can compare to derive real packet loss.
         self.summary["throughput_mbps"] = round(last_mbps, 2)
+        self.summary["bytes_total"] = last_bytes
         self.summary["return_code"] = self._proc.returncode
 
 
@@ -390,10 +412,14 @@ class SrtReceiver(Runner):
         assert self._proc.stdout is not None
         sample_count = {"n": 0}
         last_mbps = 0.0
+        last_bytes = 0
         for raw in self._proc.stdout:
             if self._stopping:
                 break
             self.log(raw, tag="ffmpeg")
+            sm = _FF_SIZE_RE.search(raw)
+            if sm:
+                last_bytes = _ff_size_to_bytes(float(sm.group("size")), sm.group("unit"))
             m = _FF_PROGRESS_RE.search(raw)
             if not m:
                 continue
@@ -413,6 +439,7 @@ class SrtReceiver(Runner):
         # received throughput; the auto-test orchestrator pulls this via
         # /api/history to derive real packet loss.
         self.summary["throughput_mbps"] = round(last_mbps, 2)
+        self.summary["bytes_total"] = last_bytes
         self.summary["return_code"] = self._proc.returncode
         self.summary["ended"] = time.time()
         return
