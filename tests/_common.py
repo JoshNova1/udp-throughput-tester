@@ -14,6 +14,25 @@ from typing import Callable, Optional, TextIO
 _IS_WINDOWS = sys.platform == "win32"
 
 
+def hidden_subprocess_kwargs() -> dict:
+    """Return kwargs that prevent subprocess.run / Popen from popping a
+    visible console window on Windows. On non-Windows returns {}.
+
+    Belt-and-braces: passes both CREATE_NO_WINDOW (suppresses the new console
+    Windows would otherwise allocate for a GUI parent) AND a STARTUPINFO with
+    SW_HIDE (covers the edge case where the child binary opts back into a
+    console — e.g. some Cygwin-built iperf3 distributions)."""
+    if not _IS_WINDOWS:
+        return {}
+    startupinfo = subprocess.STARTUPINFO()
+    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    startupinfo.wShowWindow = subprocess.SW_HIDE
+    return {
+        "creationflags": subprocess.CREATE_NO_WINDOW,
+        "startupinfo": startupinfo,
+    }
+
+
 def have(tool: str) -> bool:
     """True if a binary is on PATH."""
     return shutil.which(tool) is not None
@@ -72,13 +91,23 @@ def popen(cmd: list[str], **kwargs) -> subprocess.Popen:
     if _IS_WINDOWS:
         # CREATE_NEW_PROCESS_GROUP: makes the child the head of its own group
         # so kill_tree can send CTRL_BREAK_EVENT cleanly.
-        # CREATE_NO_WINDOW: suppress the console window that would otherwise
-        # pop up for each ffmpeg/iperf3 child (since we launched from a GUI
-        # parent that has no console of its own).
+        # CREATE_NO_WINDOW + SW_HIDE STARTUPINFO: defence-in-depth to suppress
+        # the console window that would otherwise pop up for each ffmpeg /
+        # iperf3 child. CREATE_NO_WINDOW alone is *usually* sufficient when
+        # the parent is a windowless GUI, but some Cygwin-based binaries
+        # (iperf3 distros included) still allocate a console unless we also
+        # pass a STARTUPINFO requesting SW_HIDE. This combo is what made the
+        # difference on a colleague's machine where 3 stray cmd windows
+        # appeared on install.
         kwargs.setdefault(
             "creationflags",
             subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW,
         )
+        if "startupinfo" not in kwargs:
+            si = subprocess.STARTUPINFO()
+            si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            si.wShowWindow = subprocess.SW_HIDE
+            kwargs["startupinfo"] = si
     else:
         kwargs.setdefault("preexec_fn", os.setsid)
     return subprocess.Popen(cmd, **kwargs)

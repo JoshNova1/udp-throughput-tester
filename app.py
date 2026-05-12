@@ -1013,19 +1013,44 @@ def _do_update_worker(asset_url: str, asset_name: str, asset_size: int) -> None:
     # detached child. Also logs every step to update.log so we can debug.
     import subprocess
     pid = os.getpid()
-    install_dir = Path(os.environ.get("LOCALAPPDATA", "")) / "Programs" / "ThroughputTester"
-    new_exe = install_dir / "UDPThroughputTester.exe"
+
+    # Derive install_dir from where THIS exe is actually running, not a
+    # hard-coded guess. Inno can install per-user (%LOCALAPPDATA%\Programs)
+    # or per-machine (%ProgramFiles%) and we must follow whichever path the
+    # user originally chose -- otherwise Test-Path on the new exe fails and
+    # we don't relaunch. Falls back to the per-user default for dev runs.
+    exe_path = Path(sys.executable)
+    if exe_path.name.lower() == "udpthroughputtester.exe":
+        new_exe = exe_path
+        install_dir = exe_path.parent
+    else:
+        install_dir = Path(os.environ.get("LOCALAPPDATA", "")) / "Programs" / "ThroughputTester"
+        new_exe = install_dir / "UDPThroughputTester.exe"
+
+    # Match the Inno scope (/CURRENTUSER vs /ALLUSERS) to the existing
+    # install location. With PrivilegesRequiredOverridesAllowed=dialog the
+    # silent installer needs one of these flags -- and forcing /CURRENTUSER
+    # against a per-machine install fails silently (no UI -> invisible).
+    localappdata = (os.environ.get("LOCALAPPDATA") or "").lower()
+    if localappdata and str(install_dir).lower().startswith(localappdata):
+        scope_arg = "/CURRENTUSER"
+    else:
+        scope_arg = "/ALLUSERS"
+
     runner = _UPDATE_TMP / "run-update.ps1"
     current_version = APP_VERSION
+    installer_log = _UPDATE_TMP / "installer.log"
     runner.write_text(f"""
 # Auto-generated update runner. Writes progress to update.log.
 $ErrorActionPreference = 'Continue'
-$log     = '{log}'
-$flag    = '{_UPDATE_FLAG}'
-$exePath = '{new_exe}'
-$setup   = '{target}'
-$oldPid  = {pid}
-$oldVer  = '{current_version}'
+$log          = '{log}'
+$installerLog = '{installer_log}'
+$flag         = '{_UPDATE_FLAG}'
+$exePath      = '{new_exe}'
+$setup        = '{target}'
+$oldPid       = {pid}
+$oldVer       = '{current_version}'
+$scopeArg     = '{scope_arg}'
 
 function Log($msg) {{
   $stamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss.fff'
@@ -1033,26 +1058,60 @@ function Log($msg) {{
 }}
 
 Log "runner start (waiting for pid $oldPid)"
+Log "exePath=$exePath setup=$setup"
 $proc = Get-Process -Id $oldPid -ErrorAction SilentlyContinue
 if ($proc) {{
   try {{ $proc.WaitForExit(60000) | Out-Null }} catch {{ Log "WaitForExit threw: $_" }}
 }}
-# Also wait for any other UDPThroughputTester instances to exit (loopback testing).
-$deadline = (Get-Date).AddSeconds(20)
+# Wait for other UDPThroughputTester instances to exit gracefully (loopback
+# testing leaves a second instance running). After 8s of waiting, force-kill
+# any survivors -- otherwise the file lock blocks Inno's file replacement and
+# the silent install aborts with exit 5 "DeleteFile failed; code 5".
+$deadline = (Get-Date).AddSeconds(8)
 while ((Get-Process -Name 'UDPThroughputTester' -ErrorAction SilentlyContinue) -and ((Get-Date) -lt $deadline)) {{
   Start-Sleep -Milliseconds 500
 }}
+$survivors = Get-Process -Name 'UDPThroughputTester' -ErrorAction SilentlyContinue
+if ($survivors) {{
+  Log "force-killing $($survivors.Count) lingering UDPThroughputTester process(es)"
+  $survivors | Stop-Process -Force -ErrorAction SilentlyContinue
+  Start-Sleep -Seconds 1
+}}
 
-Log "pid gone, launching installer"
+# Wait for the install-dir exe to become writable before launching Setup.
+# On Windows ARM64 emulating x64, XtaCache (the translation cache) holds
+# the binary open for several seconds *after* the process exits. Inno's
+# 4 internal retries (~4s) aren't enough -- it aborts with exit 5
+# "DeleteFile failed; code 5. Access is denied." Probe until we can open
+# the file for write ourselves, then we know Setup can replace it.
+$deadline = (Get-Date).AddSeconds(60)
+$unlocked = $false
+while ((Get-Date) -lt $deadline) {{
+  if (-not (Test-Path $exePath)) {{ $unlocked = $true; break }}
+  try {{
+    $fs = [System.IO.File]::Open($exePath, 'Open', 'ReadWrite', 'None')
+    $fs.Close()
+    $unlocked = $true
+    break
+  }} catch {{
+    Start-Sleep -Milliseconds 500
+  }}
+}}
+Log "exe lock check: unlocked=$unlocked"
+
+Log "launching installer ($scopeArg)"
 $psi = New-Object System.Diagnostics.ProcessStartInfo
 $psi.FileName = $setup
-$psi.Arguments = '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /CURRENTUSER'
+$psi.Arguments = "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /LOG=`"$installerLog`" $scopeArg"
 $psi.UseShellExecute = $false
 $psi.RedirectStandardOutput = $true
 $psi.RedirectStandardError  = $true
 $p = [System.Diagnostics.Process]::Start($psi)
 $p.WaitForExit()
 Log "installer exited $($p.ExitCode)"
+if ($p.ExitCode -ne 0) {{
+  Log "installer log: $installerLog"
+}}
 
 Start-Sleep -Seconds 2
 
@@ -1069,10 +1128,25 @@ if (Test-Path $exePath) {{
     _set_update_state(phase="installing",
                       message="Installer launching — app will restart")
     DETACHED = 0x00000008
+    _si = subprocess.STARTUPINFO()
+    _si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    _si.wShowWindow = subprocess.SW_HIDE
+    # Explicit DEVNULL on all three std handles: the parent is a windowless
+    # GUI with invalid console handles. If we let the detached PowerShell
+    # inherit them it dies on its first stdout write -- which is exactly
+    # what was happening (the runner script never wrote its first log line
+    # despite Popen returning success).
     subprocess.Popen(
         ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass",
          "-WindowStyle", "Hidden", "-File", str(runner)],
-        creationflags=DETACHED | subprocess.CREATE_NEW_PROCESS_GROUP,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        creationflags=(
+            DETACHED
+            | subprocess.CREATE_NEW_PROCESS_GROUP
+        ),
+        startupinfo=_si,
         close_fds=True,
     )
     # Give the runner ~2s to spin up and start waiting on our PID, then

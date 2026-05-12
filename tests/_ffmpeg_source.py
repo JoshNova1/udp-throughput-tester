@@ -25,6 +25,8 @@ import subprocess
 from functools import lru_cache
 from typing import Optional
 
+from ._common import hidden_subprocess_kwargs
+
 
 @lru_cache(maxsize=1)
 def has_v4l2_h264() -> bool:
@@ -40,6 +42,7 @@ def has_v4l2_h264() -> bool:
         r = subprocess.run(
             ["ffmpeg", "-hide_banner", "-encoders"],
             capture_output=True, text=True, timeout=5,
+            **hidden_subprocess_kwargs(),
         )
         if "h264_v4l2m2m" not in r.stdout:
             return False
@@ -195,7 +198,8 @@ def render_preview_jpeg(params: dict, out_path: str) -> Optional[str]:
     ]
     try:
         subprocess.run(cmd, check=True, timeout=10,
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                       **hidden_subprocess_kwargs())
         return out_path
     except Exception:
         return None
