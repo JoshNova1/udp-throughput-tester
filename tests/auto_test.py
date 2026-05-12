@@ -264,9 +264,27 @@ class AutoTestSender(Runner):
             for s in senders:
                 s.join(timeout=5)
 
-            # Let the ping probe and the receiver's history write finish.
+            # Let the ping probe finish.
             ping_thread.join(timeout=2)
-            time.sleep(0.6)  # peer's on_done -> history INSERT settles
+
+            # Wait for the receiver to actually finish before querying its
+            # history. The receiver runs longer than the sender (SRT EOF +
+            # ffmpeg cleanup take a couple seconds), so if we query too
+            # early we either get an in-progress record or the *previous*
+            # probe's record -- either way the byte count is wrong and our
+            # loss calc says "100% loss, fail probe", which is what made
+            # auto-test bottom out at the 1 Mbps floor on a healthy WAN.
+            peer_status_url = f"http://{peer}:{peer_api_port}/api/status"
+            wait_deadline = time.time() + 15
+            while time.time() < wait_deadline:
+                try:
+                    st = requests.get(peer_status_url, timeout=3).json()
+                    if not (st.get("session") or {}).get("active"):
+                        break
+                except requests.RequestException:
+                    pass
+                time.sleep(0.5)
+            time.sleep(0.4)  # on_done -> history INSERT settles
 
             # Fetch the receiver's view of this probe to compare what was
             # actually delivered vs what we attempted to send. Prefer the
