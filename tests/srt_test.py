@@ -242,6 +242,7 @@ class SrtSender(Runner):
         self._proc = popen(ff_cmd)
         assert self._proc.stdout is not None
         sample_count = {"n": 0}
+        last_mbps = 0.0
         for raw in self._proc.stdout:
             if self._stopping:
                 break
@@ -252,6 +253,7 @@ class SrtSender(Runner):
             mbps = _ff_bitrate_to_mbps(
                 float(m.group("bitrate")), m.group("bunit"),
             )
+            last_mbps = mbps
             sample_count["n"] += 1
             self.on_sample({
                 "ts": time.time(),
@@ -260,6 +262,11 @@ class SrtSender(Runner):
             })
         self._proc.wait()
         self.summary["samples_count"] = sample_count["n"]
+        # ffmpeg's `bitrate=` is a running cumulative average -- the last
+        # value is therefore the test's overall mean throughput. Stored so
+        # the receiver-side can be queried via /api/history and the auto-
+        # test can compare to derive real packet loss.
+        self.summary["throughput_mbps"] = round(last_mbps, 2)
         self.summary["return_code"] = self._proc.returncode
 
 
@@ -315,6 +322,7 @@ class SrtReceiver(Runner):
         self._preview = None
         assert self._proc.stdout is not None
         sample_count = {"n": 0}
+        last_mbps = 0.0
         for raw in self._proc.stdout:
             if self._stopping:
                 break
@@ -325,6 +333,7 @@ class SrtReceiver(Runner):
             mbps = _ff_bitrate_to_mbps(
                 float(m.group("bitrate")), m.group("bunit"),
             )
+            last_mbps = mbps
             sample_count["n"] += 1
             self.on_sample({
                 "ts": time.time(),
@@ -333,6 +342,10 @@ class SrtReceiver(Runner):
             })
         self._proc.wait()
         self.summary["samples_count"] = sample_count["n"]
+        # Last cumulative-average bitrate from ffmpeg is the overall
+        # received throughput; the auto-test orchestrator pulls this via
+        # /api/history to derive real packet loss.
+        self.summary["throughput_mbps"] = round(last_mbps, 2)
         self.summary["return_code"] = self._proc.returncode
         self.summary["ended"] = time.time()
         return

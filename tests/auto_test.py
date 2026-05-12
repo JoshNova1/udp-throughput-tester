@@ -33,14 +33,46 @@ to common H.264 resolution/framerate presets.
 """
 from __future__ import annotations
 
+import re
+import subprocess
+import sys
 import threading
 import time
 from typing import Optional
 
 import requests
 
-from ._common import Runner, kill_tree
+from ._common import Runner, kill_tree, hidden_subprocess_kwargs
 from .srt_test import SrtSender
+
+_IS_WINDOWS = sys.platform == "win32"
+
+# Windows: "Average = 12ms"  /  POSIX: "rtt min/avg/max/mdev = 1.0/12.3/100.0/5.0 ms"
+_PING_AVG_WIN = re.compile(r"Average\s*=\s*(\d+(?:\.\d+)?)\s*ms", re.IGNORECASE)
+_PING_AVG_POSIX = re.compile(r"min/avg/max[^=]*=\s*[\d.]+/([\d.]+)/")
+
+
+def _ping_avg_ms(peer: str, duration_s: int) -> Optional[float]:
+    """Run ping for the duration of the probe and return the average RTT
+    in milliseconds. Done in parallel with the SRT load test so the
+    RTT reflects performance UNDER LOAD, which is what matters."""
+    count = max(3, duration_s)
+    if _IS_WINDOWS:
+        # -n count, -w timeout-per-reply-ms. ICMP echo, blocks until done.
+        cmd = ["ping", "-n", str(count), "-w", "2000", peer]
+    else:
+        cmd = ["ping", "-c", str(count), "-W", "2", peer]
+    try:
+        r = subprocess.run(
+            cmd, capture_output=True, text=True,
+            timeout=count + 10,
+            **hidden_subprocess_kwargs(),
+        )
+        out = (r.stdout or "") + (r.stderr or "")
+        m = _PING_AVG_WIN.search(out) if _IS_WINDOWS else _PING_AVG_POSIX.search(out)
+        return float(m.group(1)) if m else None
+    except Exception:
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -171,6 +203,17 @@ class AutoTestSender(Runner):
 
             time.sleep(0.8)  # let SRT listeners bind
 
+            # 1b. Kick off an RTT probe in parallel with the load test.
+            #     ffmpeg-native SRT doesn't expose per-packet libsrt stats
+            #     (msRTT etc.) so we measure RTT independently via ICMP
+            #     echo, concurrent with the stream so the result reflects
+            #     latency UNDER LOAD -- which is the only useful kind.
+            ping_result: dict = {"avg_rtt_ms": None}
+            def _ping_worker():
+                ping_result["avg_rtt_ms"] = _ping_avg_ms(peer, duration_s)
+            ping_thread = threading.Thread(target=_ping_worker, daemon=True)
+            ping_thread.start()
+
             # 2. Spawn N local senders, each reading the same source pattern,
             #    each pointed at its own port on the peer.
             senders: list[SrtSender] = []
@@ -214,6 +257,34 @@ class AutoTestSender(Runner):
             for s in senders:
                 s.join(timeout=5)
 
+            # Let the ping probe and the receiver's history write finish.
+            ping_thread.join(timeout=2)
+            time.sleep(0.6)  # peer's on_done -> history INSERT settles
+
+            # Fetch the receiver's view of this probe so we can compare what
+            # was actually delivered vs what we attempted to send. ffmpeg-
+            # native gives us the cumulative average bitrate on both ends;
+            # subtracting yields a real packet-loss approximation that we
+            # otherwise lost when dropping srt-live-transmit.
+            recv_mbps_total: Optional[float] = None
+            try:
+                hist_url = f"http://{peer}:{peer_api_port}/api/history?limit=1"
+                rh = requests.get(hist_url, timeout=5).json()
+                if rh and isinstance(rh, list):
+                    rec_summary = rh[0].get("summary", {}) or {}
+                    totals = [
+                        (v or {}).get("throughput_mbps")
+                        for v in rec_summary.values()
+                        if isinstance(v, dict)
+                    ]
+                    totals = [t for t in totals if t is not None]
+                    if totals:
+                        recv_mbps_total = round(sum(totals), 2)
+            except Exception:
+                recv_mbps_total = None
+
+            measured_rtt_ms = ping_result["avg_rtt_ms"]
+
             # 4. Reduce samples to per-stream and aggregate metrics.
             #    Accept samples from either pipeline:
             #      - srt-live-transmit: has msRTT + pktSent* + mbpsSendRate
@@ -255,6 +326,16 @@ class AutoTestSender(Runner):
                     true_mbps = round(sum(rates) / len(rates), 2)
                 else:
                     true_mbps = 0.0
+                # In-stream libsrt RTT (slt path) or fall back to the ICMP
+                # measurement we ran in parallel. ffmpeg-native always
+                # falls back since it doesn't surface SRT-level RTT.
+                if rtts:
+                    rtt_max = round(max(rtts), 1)
+                    rtt_avg = round(sum(rtts) / len(rtts), 1)
+                elif measured_rtt_ms is not None:
+                    rtt_max = rtt_avg = round(measured_rtt_ms, 1)
+                else:
+                    rtt_max = rtt_avg = 0.0
                 per_stream.append({
                     "stream_id":    i,
                     "sent_total":   sent,
@@ -262,8 +343,8 @@ class AutoTestSender(Runner):
                     "byte_total":   bytes_max,
                     "loss_pct":     round((100.0 * lost / sent) if sent else 0.0, 3),
                     "avg_send_mbps": true_mbps,
-                    "max_rtt_ms":   round(max(rtts), 1) if rtts else 0.0,
-                    "avg_rtt_ms":   round(sum(rtts) / len(rtts), 1) if rtts else 0.0,
+                    "max_rtt_ms":   rtt_max,
+                    "avg_rtt_ms":   rtt_avg,
                     **diag,
                 })
 
@@ -281,7 +362,16 @@ class AutoTestSender(Runner):
             send_sum   = sum(p["avg_send_mbps"] for p in per_stream)
             worst_rtt  = max(p["max_rtt_ms"]    for p in per_stream)
             target_total = per_stream_mbps * streams
-            loss_pct   = (100.0 * loss_sum / sent_sum) if sent_sum else 0.0
+            # Loss: prefer the *real* sender-vs-receiver throughput delta
+            # (now that ffmpeg surfaces throughput_mbps on both ends). Fall
+            # back to slt's pktSndLossTotal-derived loss if the receiver
+            # query failed, and to 0 if neither is available.
+            if recv_mbps_total is not None and send_sum > 0:
+                loss_pct = max(0.0, (send_sum - recv_mbps_total) / send_sum * 100.0)
+            elif sent_sum:
+                loss_pct = 100.0 * loss_sum / sent_sum
+            else:
+                loss_pct = 0.0
             delivered_pct = (100.0 * send_sum / target_total) if target_total else 100.0
 
             return {
@@ -291,6 +381,9 @@ class AutoTestSender(Runner):
                 "target_total_mbps":      round(target_total, 2),
                 "avg_send_total_mbps":    round(send_sum, 2),
                 "avg_send_per_stream_mbps": round(send_sum / streams, 2),
+                "recv_total_mbps":        recv_mbps_total,
+                "icmp_rtt_ms":            (round(measured_rtt_ms, 1)
+                                            if measured_rtt_ms is not None else None),
                 "max_rtt_ms":             round(worst_rtt, 1),
                 "loss_pct":               round(loss_pct, 3),
                 "delivered_pct":          round(delivered_pct, 1),
