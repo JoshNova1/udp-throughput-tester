@@ -343,6 +343,28 @@ const loadConfig = async () => {
   $("node-name-display").textContent = state.nodeName || `(unnamed @ ${location.host})`;
   $("peer-display").textContent = cfg.peer_host || "not set";
 
+  // Local IP -- shown so the operator knows what to type into the sender's
+  // "peer host" field on the other machine. Click-to-copy for convenience.
+  const net = status.network || {};
+  const ipEl = $("local-ip-display");
+  const ipWrap = $("local-ip-wrap");
+  if (ipEl) {
+    ipEl.textContent = net.primary || "—";
+    if (net.all && net.all.length > 1) {
+      ipWrap.title = `Click to copy. All addresses: ${net.all.join(", ")}`;
+    }
+    if (net.primary && !ipWrap._wired) {
+      ipWrap._wired = true;
+      ipWrap.style.cursor = "pointer";
+      ipWrap.addEventListener("click", () => {
+        navigator.clipboard?.writeText(net.primary).then(
+          () => showToast(`Copied ${net.primary}`, "success", 1500),
+          () => {},
+        );
+      });
+    }
+  }
+
   // Form values
   $("mode").value = ui.mode ?? cfg.default_mode ?? "srt";
   $("source").value = ui.source ?? "testpattern";

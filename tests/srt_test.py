@@ -282,20 +282,30 @@ class SrtReceiver(Runner):
             self.summary["ended"] = time.time()
             return
 
-        # ---- srt-live-transmit path (with optional ffmpeg preview tap) ----
+        # ---- srt-live-transmit pipeline ----
+        # ALWAYS use the two-process form: srt-live-transmit terminates SRT
+        # and forwards the MPEG-TS to a local UDP port; ffmpeg reads that
+        # UDP and either writes a JPEG preview frame per second or simply
+        # discards to NUL. The original single-process form wrote directly
+        # to file:///dev/null, which this Windows build of srt-live-transmit
+        # rejects with "Unsupported target type" -- the listener exits
+        # immediately and the sender's caller can't connect, so every
+        # auto-test probe reported 'no samples' and the floor of 1 Mbps.
         self.summary["pipeline"] = "srt-live-transmit"
-        if preview_path and have("ffmpeg"):
-            # Two-process pipeline: srt-live-transmit terminates SRT and writes
-            # the decoded MPEG-TS to a local UDP port; ffmpeg reads it and
-            # produces both /dev/null sink and a JPEG snapshot per second.
-            local_port = _find_free_udp_port()
-            srt_cmd = [
-                "srt-live-transmit",
-                "-s:1", "-pf:json", "-loglevel:warning",
-                srt_url,
-                f"udp://127.0.0.1:{local_port}",
-            ]
-            preview_cmd = [
+        if not have("ffmpeg"):
+            raise RuntimeError(
+                "ffmpeg required: srt-live-transmit on Windows can't "
+                "discard a stream on its own (no file:// support)"
+            )
+        local_port = _find_free_udp_port()
+        srt_cmd = [
+            "srt-live-transmit",
+            "-s:1", "-pf:json", "-loglevel:warning",
+            srt_url,
+            f"udp://127.0.0.1:{local_port}",
+        ]
+        if preview_path:
+            sink_cmd = [
                 "ffmpeg", "-hide_banner", "-nostdin", "-y", "-loglevel", "warning",
                 "-fflags", "+discardcorrupt",
                 "-i", f"udp://127.0.0.1:{local_port}?fifo_size=1000000&overrun_nonfatal=1",
@@ -304,20 +314,19 @@ class SrtReceiver(Runner):
                 "-update", "1", "-q:v", "5",
                 preview_path,
             ]
-            self.summary["cmd"] = " ".join(srt_cmd) + "  |  " + " ".join(preview_cmd)
             self.summary["preview_path"] = preview_path
-            self._proc = popen(srt_cmd)
-            self._preview = popen(preview_cmd)
         else:
-            cmd = [
-                "srt-live-transmit",
-                "-s:1", "-pf:json", "-loglevel:warning",
-                srt_url,
-                "file:///dev/null",
+            sink_cmd = [
+                "ffmpeg", "-hide_banner", "-nostdin", "-y", "-loglevel", "warning",
+                "-fflags", "+discardcorrupt",
+                "-i", f"udp://127.0.0.1:{local_port}?fifo_size=1000000&overrun_nonfatal=1&timeout=5000000",
+                "-c", "copy",
+                "-t", str(run_for_s),
+                "-f", "mpegts", os.devnull,
             ]
-            self.summary["cmd"] = " ".join(cmd)
-            self._proc = popen(cmd)
-            self._preview = None
+        self.summary["cmd"] = " ".join(srt_cmd) + "  |  " + " ".join(sink_cmd)
+        self._proc = popen(srt_cmd)
+        self._preview = popen(sink_cmd)
 
         self.summary["started"] = time.time()
 

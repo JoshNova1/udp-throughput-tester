@@ -279,11 +279,12 @@ code {
   z-index: 9;
 }
 .topbar-left, .topbar-right { display: flex; align-items: center; gap: 18px; }
-.node-id, .peer-state {
+.node-id, .peer-state, .local-ip {
   font-size: 13px; color: var(--text-soft);
   display: inline-flex; gap: 6px; align-items: center;
 }
-.node-id .muted, .peer-state .muted { font-size: 11px; }
+.node-id .muted, .peer-state .muted, .local-ip .muted { font-size: 11px; }
+.local-ip:hover { color: var(--text); }
 
 .role-switch {
   display: inline-flex; gap: 0;

@@ -359,6 +359,7 @@ def api_status():
         "encoders": {
             "h264_v4l2m2m": has_v4l2_h264(),
         },
+        "network": _get_local_network(),
         "clips_dir": str(CLIPS_DIR),
         "app": {
             "version": APP_VERSION,
@@ -410,6 +411,51 @@ def api_preview():
 def _have(tool: str) -> bool:
     from shutil import which
     return which(tool) is not None
+
+
+_NETWORK_CACHE: dict = {"value": None, "ts": 0.0}
+_NETWORK_TTL_S = 30.0
+
+
+def _get_local_network() -> dict:
+    """Return the host's primary outbound IPv4 + all non-loopback IPv4s.
+
+    Used by /api/status so the UI can show "Local IP: x.x.x.x" -- saves the
+    operator from having to dig through Settings or `ipconfig` to find what
+    to type into the sender's "peer host" field on the other machine.
+
+    Result is cached for _NETWORK_TTL_S because /api/status is polled every
+    5s and gethostbyname_ex can take double-digit milliseconds on misconfigured
+    machines."""
+    now = time.time()
+    if _NETWORK_CACHE["value"] is not None and (now - _NETWORK_CACHE["ts"]) < _NETWORK_TTL_S:
+        return _NETWORK_CACHE["value"]
+    import socket
+    primary = None
+    try:
+        # Connect-to-anywhere trick: the socket never actually sends, but the
+        # OS picks the interface it WOULD route to 8.8.8.8 through. That's
+        # the same interface SRT/UDP test traffic will leave by, so it's the
+        # right IP to show as "this machine's address".
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            s.connect(("8.8.8.8", 53))
+            primary = s.getsockname()[0]
+        finally:
+            s.close()
+    except Exception:
+        pass
+    try:
+        _, _, all_ips = socket.gethostbyname_ex(socket.gethostname())
+        all_ips = [ip for ip in all_ips if not ip.startswith("127.")]
+    except Exception:
+        all_ips = []
+    if primary and primary not in all_ips:
+        all_ips.insert(0, primary)
+    result = {"primary": primary, "all": all_ips}
+    _NETWORK_CACHE["value"] = result
+    _NETWORK_CACHE["ts"] = now
+    return result
 
 
 # ---------------------------------------------------------------------------
