@@ -191,6 +191,29 @@ const refreshVisibility = () => {
   // Bitrate visibility for ping
   document.querySelectorAll(".bitrate-field").forEach((el) =>
     el.style.display = mode === "ping" ? "none" : "");
+  // KPI relevance per mode -- only show stats the chosen test actually measures.
+  // Element opts in via data-modes="srt ping" etc.; if the current mode isn't
+  // in that list the KPI tile is hidden.
+  document.querySelectorAll(".kpi[data-modes]").forEach((el) => {
+    const supported = el.getAttribute("data-modes").split(/\s+/);
+    el.style.display = supported.includes(mode) ? "" : "none";
+  });
+  // Chart series relevance per mode. Datasets are [0]=Throughput, [1]=Loss,
+  // [2]=RTT. Toggle the `hidden` flag rather than mutating data so toggling
+  // back later works without a reset.
+  if (chart) {
+    const series = {
+      iperf3:     { throughput: true,  loss: true,  rtt: false },
+      srt:        { throughput: true,  loss: true,  rtt: true  },
+      ffmpeg_udp: { throughput: true,  loss: false, rtt: false },
+      ping:       { throughput: false, loss: true,  rtt: true  },
+      auto:       { throughput: true,  loss: true,  rtt: true  },
+    }[mode] || { throughput: true, loss: true, rtt: false };
+    chart.data.datasets[0].hidden = !series.throughput;
+    chart.data.datasets[1].hidden = !series.loss;
+    chart.data.datasets[2].hidden = !series.rtt;
+    chart.update("none");
+  }
   // Update bitrate enabled state
   const useNative = isFile && $("bitrate-native").checked;
   $("bitrate-slider").disabled = useNative;
