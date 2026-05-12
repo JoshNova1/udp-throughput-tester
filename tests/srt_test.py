@@ -171,10 +171,16 @@ class SrtSender(Runner):
         self.summary["params"] = params
         self.summary["started"] = time.time()
 
-        if have("srt-live-transmit"):
-            self._run_via_slt(params, srt_url, duration)
-        else:
-            self._run_via_ffmpeg_native(params, srt_url, duration)
+        # Always use ffmpeg-native SRT. The two-process slt pipeline
+        # (ffmpeg -> local UDP -> srt-live-transmit -> SRT) is silently
+        # broken with the bundled libsrt 1.5.3 build: slt accepts UDP
+        # input and emits stats but only forwards a tiny fraction to SRT
+        # (verified empirically: ~60 packets in 10s for a 5 Mbps stream,
+        # send.bytes flatlines, receiver shows no throughput). ffmpeg has
+        # libsrt baked in (verified via -protocols) and pushes data
+        # cleanly. We lose slt's per-packet RTT/retrans stats but gain
+        # actual working throughput, which is the whole point.
+        self._run_via_ffmpeg_native(params, srt_url, duration)
 
         self.summary["ended"] = time.time()
 
@@ -287,47 +293,49 @@ class SrtReceiver(Runner):
         srt_url = slt_url  # used by slt path below
 
         self.summary["started"] = time.time()
-        if not have("srt-live-transmit"):
-            # ffmpeg-native fallback (Windows). Single-process: ffmpeg listens
-            # on the SRT URL, mpegts-copies to NUL, emits bitrate via -stats.
-            if not have("ffmpeg"):
-                raise RuntimeError("neither srt-live-transmit nor ffmpeg installed")
-            self.summary["pipeline"] = "ffmpeg-native"
-            cmd = [
-                "ffmpeg", "-hide_banner", "-nostdin", "-y",
-                "-loglevel", "info", "-stats",
-                "-fflags", "+discardcorrupt",
-                "-i", ffmpeg_listener_url,
-                "-c", "copy",
-                "-t", str(run_for_s),
-                "-f", "mpegts", os.devnull,
-            ]
-            self.summary["cmd"] = " ".join(cmd)
-            self._proc = popen(cmd)
-            self._preview = None
-            assert self._proc.stdout is not None
-            sample_count = {"n": 0}
-            for raw in self._proc.stdout:
-                if self._stopping:
-                    break
-                self.log(raw, tag="ffmpeg")
-                m = _FF_PROGRESS_RE.search(raw)
-                if not m:
-                    continue
-                mbps = _ff_bitrate_to_mbps(
-                    float(m.group("bitrate")), m.group("bunit"),
-                )
-                sample_count["n"] += 1
-                self.on_sample({
-                    "ts": time.time(),
-                    "mbpsRecvRate": mbps,
-                    "role": "receiver",
-                })
-            self._proc.wait()
-            self.summary["samples_count"] = sample_count["n"]
-            self.summary["return_code"] = self._proc.returncode
-            self.summary["ended"] = time.time()
-            return
+        if not have("ffmpeg"):
+            raise RuntimeError("ffmpeg not installed")
+        # Always use ffmpeg-native SRT receiver. Same rationale as the
+        # SrtSender: the bundled srt-live-transmit build is unreliable
+        # (silently drops data, the two-process pipeline has buffer
+        # mismatches that bottleneck throughput). ffmpeg's libsrt
+        # listener works correctly and gives us bitrate via -stats.
+        self.summary["pipeline"] = "ffmpeg-native"
+        cmd = [
+            "ffmpeg", "-hide_banner", "-nostdin", "-y",
+            "-loglevel", "info", "-stats",
+            "-fflags", "+discardcorrupt",
+            "-i", ffmpeg_listener_url,
+            "-c", "copy",
+            "-t", str(run_for_s),
+            "-f", "mpegts", os.devnull,
+        ]
+        self.summary["cmd"] = " ".join(cmd)
+        self._proc = popen(cmd)
+        self._preview = None
+        assert self._proc.stdout is not None
+        sample_count = {"n": 0}
+        for raw in self._proc.stdout:
+            if self._stopping:
+                break
+            self.log(raw, tag="ffmpeg")
+            m = _FF_PROGRESS_RE.search(raw)
+            if not m:
+                continue
+            mbps = _ff_bitrate_to_mbps(
+                float(m.group("bitrate")), m.group("bunit"),
+            )
+            sample_count["n"] += 1
+            self.on_sample({
+                "ts": time.time(),
+                "mbpsRecvRate": mbps,
+                "role": "receiver",
+            })
+        self._proc.wait()
+        self.summary["samples_count"] = sample_count["n"]
+        self.summary["return_code"] = self._proc.returncode
+        self.summary["ended"] = time.time()
+        return
 
         # ---- srt-live-transmit pipeline ----
         # ALWAYS use the two-process form: srt-live-transmit terminates SRT

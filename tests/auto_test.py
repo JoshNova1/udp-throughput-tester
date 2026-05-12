@@ -237,15 +237,24 @@ class AutoTestSender(Runner):
                 sent      = max((s.get("pktSentTotal") or 0)     for s in useful)
                 lost      = max((s.get("pktSndLossTotal") or 0)  for s in useful)
                 bytes_max = max((s.get("byteSent") or 0)         for s in useful)
+                rates     = [s.get("mbpsSendRate") for s in useful if s.get("mbpsSendRate")]
                 rtts      = [s.get("msRTT") for s in useful if s.get("msRTT")]
-                # True throughput = cumulative bytes / probe duration.
-                # Don't average mbpsSendRate -- with `-s:1` (stats per
-                # packet) that field is an instant rate over the
-                # inter-packet interval (microseconds), so it spikes to
-                # hundreds of Mbps even on a 5 Mbps stream. The average
-                # of such spikes is meaningless; the integral is the
-                # real throughput.
-                true_mbps = round((bytes_max * 8 / 1_000_000) / duration_s, 2) if duration_s else 0.0
+                # Throughput computation depends on which pipeline produced
+                # the samples:
+                #   ffmpeg-native:  mbpsSendRate IS the running cumulative
+                #                   average bitrate from ffmpeg -stats; the
+                #                   last sample is the test's overall mean,
+                #                   so averaging (or even using max) is
+                #                   meaningful.
+                #   slt path:       mbpsSendRate is an instant rate over the
+                #                   inter-packet interval (noisy); use the
+                #                   integral byteSent/duration instead.
+                if bytes_max:
+                    true_mbps = round((bytes_max * 8 / 1_000_000) / duration_s, 2) if duration_s else 0.0
+                elif rates:
+                    true_mbps = round(sum(rates) / len(rates), 2)
+                else:
+                    true_mbps = 0.0
                 per_stream.append({
                     "stream_id":    i,
                     "sent_total":   sent,
