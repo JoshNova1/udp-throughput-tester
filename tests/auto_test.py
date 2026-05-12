@@ -221,21 +221,41 @@ class AutoTestSender(Runner):
             per_stream = []
             for i, samples in enumerate(sample_buckets):
                 useful = [s for s in samples if ("msRTT" in s) or ("mbpsSendRate" in s)]
+                # Diagnostic carry-over from the per-sender summary: lets us
+                # see whether a "no samples" or low-sample probe was caused
+                # by slt emitting little, the callback chain dropping, or
+                # the wrong pipeline being picked.
+                snd_summary = senders[i].summary if i < len(senders) else {}
+                diag = {
+                    "samples_received":   len(samples),
+                    "sender_samples_count": snd_summary.get("samples_count"),
+                    "sender_pipeline":      snd_summary.get("pipeline"),
+                }
                 if not useful:
-                    per_stream.append({"stream_id": i, "error": "no samples"})
+                    per_stream.append({"stream_id": i, "error": "no samples", **diag})
                     continue
-                sent  = max((s.get("pktSentTotal") or 0)     for s in useful)
-                lost  = max((s.get("pktSndLossTotal") or 0)  for s in useful)
-                rates = [s.get("mbpsSendRate") for s in useful if s.get("mbpsSendRate")]
-                rtts  = [s.get("msRTT")        for s in useful if s.get("msRTT")]
+                sent      = max((s.get("pktSentTotal") or 0)     for s in useful)
+                lost      = max((s.get("pktSndLossTotal") or 0)  for s in useful)
+                bytes_max = max((s.get("byteSent") or 0)         for s in useful)
+                rtts      = [s.get("msRTT") for s in useful if s.get("msRTT")]
+                # True throughput = cumulative bytes / probe duration.
+                # Don't average mbpsSendRate -- with `-s:1` (stats per
+                # packet) that field is an instant rate over the
+                # inter-packet interval (microseconds), so it spikes to
+                # hundreds of Mbps even on a 5 Mbps stream. The average
+                # of such spikes is meaningless; the integral is the
+                # real throughput.
+                true_mbps = round((bytes_max * 8 / 1_000_000) / duration_s, 2) if duration_s else 0.0
                 per_stream.append({
                     "stream_id":    i,
                     "sent_total":   sent,
                     "loss_total":   lost,
+                    "byte_total":   bytes_max,
                     "loss_pct":     round((100.0 * lost / sent) if sent else 0.0, 3),
-                    "avg_send_mbps": round(sum(rates) / len(rates), 2) if rates else 0.0,
+                    "avg_send_mbps": true_mbps,
                     "max_rtt_ms":   round(max(rtts), 1) if rtts else 0.0,
                     "avg_rtt_ms":   round(sum(rtts) / len(rtts), 1) if rtts else 0.0,
+                    **diag,
                 })
 
             errored = [s for s in per_stream if "error" in s]
