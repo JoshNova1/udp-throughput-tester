@@ -180,7 +180,13 @@ const refreshVisibility = () => {
   const source = $("source").value;
   const isAuto = (mode === "auto");
   const isVideo = (mode === "srt" || mode === "ffmpeg_udp" || isAuto);
-  const isFile = isVideo && source === "file" && !isAuto;
+  // File picker is valid in auto-test too -- the test pattern hits the
+  // libx264 encoder ceiling, but feeding a real clip lets the user
+  // measure with realistic data. In auto mode the bitrate is forced
+  // per probe, so the file gets re-encoded at the probe rate (not -c
+  // copy); that's fine for finding the network ceiling with realistic
+  // mpegts content.
+  const isFile = isVideo && source === "file";
   const isTestpattern = isVideo && source === "testpattern";
   $$(".srt-only").forEach((el) => el.style.display = (mode === "srt" || isAuto) ? "" : "none");
   $$(".video-only").forEach((el) => el.style.display = isVideo ? "" : "none");
@@ -654,7 +660,21 @@ const handleSample = (m) => {
   } else if (m.mode === "ping") {
     rtt = d.rtt_ms;
   }
-  state.lastByStream[sid] = { throughput, loss, jitter, rtt, retrans, drop, ts: Date.now() };
+  // Merge into the existing per-stream entry rather than replacing it --
+  // samples from different sources (ffmpeg progress, parallel ping)
+  // arrive separately, each carrying only the fields it knows about. A
+  // blanket overwrite would let a ping-only sample (msRTT but no
+  // throughput) wipe the most recent throughput value.
+  const prev = state.lastByStream[sid] || {};
+  state.lastByStream[sid] = {
+    throughput: throughput != null ? throughput : prev.throughput,
+    loss:       loss       != null ? loss       : prev.loss,
+    jitter:     jitter     != null ? jitter     : prev.jitter,
+    rtt:        rtt        != null ? rtt        : prev.rtt,
+    retrans:    retrans    != null ? retrans    : prev.retrans,
+    drop:       drop       != null ? drop       : prev.drop,
+    ts: Date.now(),
+  };
   const streams = Object.values(state.lastByStream).filter(s => Date.now() - s.ts < 4000);
   const sum = (k) => streams.reduce((a, s) => a + (s[k] || 0), 0);
   const max = (k) => streams.reduce((a, s) => Math.max(a, s[k] ?? 0), 0);

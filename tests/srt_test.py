@@ -23,11 +23,59 @@ import json
 import os
 import re
 import socket
+import sys
 import threading
 import time
 
 from ._common import Runner, have, popen, kill_tree
 from ._ffmpeg_source import build_ffmpeg_input
+
+_IS_WINDOWS = sys.platform == "win32"
+
+# Ping-reply regexes -- reused for streaming RTT alongside the SRT load.
+# `time<1ms` on Windows when sub-millisecond; we treat that as 0.5.
+_PING_LINE_WIN = re.compile(
+    r"Reply from\s+\S+:\s+bytes=\d+\s+time(?P<op>[=<])(?P<time>\d+)\s*ms",
+    re.IGNORECASE,
+)
+_PING_LINE_POSIX = re.compile(r"icmp_seq=\d+.*time=(?P<time>[\d.]+)\s*ms")
+
+
+def _stream_rtt(peer: str, on_rtt, stop_flag) -> None:
+    """Run a continuous ping to `peer` and call `on_rtt(ms)` for each
+    reply until `stop_flag` is set. Used by SrtSender to surface live
+    RTT under load, since ffmpeg-native SRT doesn't expose libsrt's
+    msRTT field."""
+    if _IS_WINDOWS:
+        # -t = continuous, -w = per-reply timeout (ms).
+        cmd = ["ping", "-t", "-w", "2000", peer]
+        line_re = _PING_LINE_WIN
+    else:
+        # -i interval (s); no -t equivalent, default is continuous.
+        cmd = ["ping", "-i", "1", "-W", "2", peer]
+        line_re = _PING_LINE_POSIX
+    try:
+        proc = popen(cmd)
+    except Exception:
+        return
+    try:
+        assert proc.stdout is not None
+        for raw in proc.stdout:
+            if stop_flag.is_set():
+                break
+            m = line_re.search(raw)
+            if not m:
+                continue
+            try:
+                if _IS_WINDOWS and m.group("op") == "<":
+                    rtt_ms = 0.5  # `time<1ms` -> treat as sub-ms
+                else:
+                    rtt_ms = float(m.group("time"))
+                on_rtt(rtt_ms)
+            except (ValueError, IndexError):
+                pass
+    finally:
+        kill_tree(proc)
 
 # ffmpeg progress-line regex: matches "frame= N ... bitrate= X kbits/s"
 _FF_PROGRESS_RE = re.compile(
@@ -180,7 +228,26 @@ class SrtSender(Runner):
         # libsrt baked in (verified via -protocols) and pushes data
         # cleanly. We lose slt's per-packet RTT/retrans stats but gain
         # actual working throughput, which is the whole point.
-        self._run_via_ffmpeg_native(params, srt_url, duration)
+
+        # Parallel ICMP ping so the live KPI panel gets RTT under load.
+        # Each reply emits a sample with `msRTT` so the existing JS
+        # handler (which already reads msRTT for SRT mode) picks it up
+        # without changes. The reply rate is roughly 1/sec on default
+        # ping intervals -- enough for a "what's RTT right now" gauge.
+        stop_ping = threading.Event()
+        def _on_rtt(rtt_ms: float) -> None:
+            self.on_sample({"ts": time.time(), "msRTT": rtt_ms, "role": "sender"})
+        ping_thread = threading.Thread(
+            target=_stream_rtt,
+            args=(peer, _on_rtt, stop_ping),
+            daemon=True,
+        )
+        ping_thread.start()
+        try:
+            self._run_via_ffmpeg_native(params, srt_url, duration)
+        finally:
+            stop_ping.set()
+            ping_thread.join(timeout=2)
 
         self.summary["ended"] = time.time()
 
