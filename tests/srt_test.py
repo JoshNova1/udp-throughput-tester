@@ -56,6 +56,54 @@ STAT_KEYS_RECEIVER = [
 ]
 
 
+def _normalize_slt_sample(obj: dict, role: str) -> dict:
+    """Map srt-live-transmit's JSON stats into the flat keys our pipeline
+    uses internally. Handles both schemas slt has shipped:
+
+    * Legacy flat schema (older libsrt):
+        {"msRTT": ..., "mbpsSendRate": ..., "pktSentTotal": ...}
+    * Nested schema (libsrt 1.4+, what we bundle today via CI):
+        {"link":{"rtt":..,"bandwidth":..},
+         "send":{"mbitRate":..,"packets":..,"packetsLost":..},
+         "recv":{...}}
+
+    Returns the flat dict. Empty values (missing in the source) are stripped
+    so downstream `"msRTT" in sample` style checks Just Work.
+
+    Before this normaliser existed, every srt-live-transmit sample on a
+    recent libsrt build came through as just `{"ts": ...}` and the auto-test
+    filter rejected the lot with "no samples" -- this was the entire reason
+    the auto-test reported a 1 Mbps floor on real LAN tests."""
+    flat: dict = {}
+    if "link" in obj or "send" in obj or "recv" in obj:
+        link = obj.get("link") or {}
+        send = obj.get("send") or {}
+        recv = obj.get("recv") or {}
+        flat["msRTT"]         = link.get("rtt")
+        flat["mbpsBandwidth"] = link.get("bandwidth")
+        if role == "sender":
+            flat["mbpsSendRate"]    = send.get("mbitRate")
+            flat["pktSentTotal"]    = send.get("packets")
+            flat["pktSndLossTotal"] = send.get("packetsLost")
+            flat["pktRetransTotal"] = send.get("packetsRetransmitted")
+            flat["pktSndDropTotal"] = send.get("packetsDropped")
+            flat["byteSent"]        = send.get("bytes")
+        else:
+            flat["mbpsRecvRate"]      = recv.get("mbitRate")
+            flat["pktRecvTotal"]      = recv.get("packets")
+            flat["pktRcvLossTotal"]   = recv.get("packetsLost")
+            flat["pktRcvRetransTotal"]= recv.get("packetsRetransmitted")
+            flat["pktRcvDropTotal"]   = recv.get("packetsDropped")
+            flat["byteRecv"]          = recv.get("bytes")
+    else:
+        # Legacy flat schema: just pass through the keys we know about.
+        keys = STAT_KEYS_SENDER if role == "sender" else STAT_KEYS_RECEIVER
+        for k in keys:
+            if k in obj:
+                flat[k] = obj[k]
+    return {k: v for k, v in flat.items() if v is not None}
+
+
 def _find_free_udp_port() -> int:
     """Pick a high random UDP port for the local ffmpeg<->srt-live-transmit hop."""
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -66,11 +114,13 @@ def _find_free_udp_port() -> int:
         s.close()
 
 
-def _parse_stats_stream(stream, on_sample, keys, stop_flag):
-    """Read JSON-stats output from srt-live-transmit and emit samples.
+def _parse_stats_stream(stream, on_sample, role, stop_flag):
+    """Read JSON-stats output from srt-live-transmit and emit normalised samples.
 
     srt-live-transmit -pf:json emits one JSON object per report interval,
-    each on its own line OR pretty-printed. We accumulate braces.
+    each on its own line OR pretty-printed. We accumulate braces. Each
+    completed object is passed through _normalize_slt_sample so callers see
+    a flat dict regardless of which libsrt schema this build produces.
     """
     buf = ""
     depth = 0
@@ -92,10 +142,7 @@ def _parse_stats_stream(stream, on_sample, keys, stop_flag):
                     except json.JSONDecodeError:
                         obj = None
                     if obj:
-                        sample = {"ts": time.time()}
-                        for k in keys:
-                            if k in obj:
-                                sample[k] = obj[k]
+                        sample = {"ts": time.time(), **_normalize_slt_sample(obj, role)}
                         on_sample(sample)
                     buf = ""
                     in_obj = False
@@ -160,7 +207,7 @@ class SrtSender(Runner):
 
         reader = threading.Thread(
             target=_parse_stats_stream,
-            args=(self._proc.stdout, on_sample, STAT_KEYS_SENDER, stop_flag),
+            args=(self._proc.stdout, on_sample, "sender", stop_flag),
             daemon=True,
         )
         reader.start()
@@ -339,7 +386,7 @@ class SrtReceiver(Runner):
 
         reader = threading.Thread(
             target=_parse_stats_stream,
-            args=(self._proc.stdout, on_sample, STAT_KEYS_RECEIVER, stop_flag),
+            args=(self._proc.stdout, on_sample, "receiver", stop_flag),
             daemon=True,
         )
         reader.start()
