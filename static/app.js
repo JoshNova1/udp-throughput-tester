@@ -164,6 +164,7 @@ const applyRoleVisibility = () => {
   const role = state.role;
   const isReceiver = role === "receiver";
   $("config-grid").style.display = isReceiver ? "none" : "";
+  $("presets-card").style.display = isReceiver ? "none" : "";
   $("receiver-panel").style.display = isReceiver ? "" : "none";
   $("test-actions").style.display = isReceiver ? "none" : "";
   $("test-sub").textContent = isReceiver
@@ -476,6 +477,57 @@ $("stop").addEventListener("click", async () => {
   await fetch("/api/test/stop", { method: "POST" });
   setStatus("stopping…", "running");
 });
+
+// ─── Quick presets ──────────────────────────────────────────────────────────
+async function firePreset(body, label) {
+  body.peer = body.peer || $("peer-host").value;
+  if (!body.peer && body.mode !== "ping") {
+    setStatus("set a peer host first", "error");
+    return;
+  }
+  resetChart();
+  state.lastByStream = {};
+  ["throughput","loss","jitter","rtt","retrans","drop"].forEach((k) => $("kpi-"+k).textContent = "—");
+  if (body.mode === "auto") resetAutoUI();
+  $("start").disabled = true; $("stop").disabled = false;
+  setStatus(`starting · ${label}`, "running");
+  startLivePreview();
+  try {
+    const r = await fetch("/api/test/start", {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify(body),
+    });
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.error || "start failed");
+    setStatus(`running · ${label}`, "running");
+  } catch (e) {
+    setStatus("error: " + e.message, "error");
+    $("start").disabled = false; $("stop").disabled = true;
+    stopLivePreview();
+  }
+}
+
+$("preset-pre-event").addEventListener("click", () => firePreset({
+  mode: "srt", streams: 2, bitrate_mbps: 2, latency_ms: 500,
+  duration: 30, source: "testpattern", resolution: "1280x720", framerate: 30,
+}, "Pre-event check"));
+
+$("preset-ceiling").addEventListener("click", () => firePreset({
+  mode: "auto", streams: 2,
+  start_mbps: 1, ceiling_mbps: 20, step_mbps: 1,
+  probe_duration_s: 12, soak_duration_s: 20,
+  latency_ms: 200, loss_pct_max: 5.0, rtt_ms_max: 400.0, deliver_pct_min: 85.0,
+  source: "testpattern", resolution: "1280x720", framerate: 30,
+}, "WAN ceiling sweep"));
+
+$("preset-ping").addEventListener("click", () => firePreset({
+  mode: "ping", count: 20, interval: 0.5,
+}, "Quick ping"));
+
+$("preset-reverse").addEventListener("click", () => firePreset({
+  mode: "srt", streams: 1, bitrate_mbps: 5, latency_ms: 200,
+  duration: 15, source: "testpattern", resolution: "1280x720", framerate: 30,
+}, "Reverse sanity"));
 
 const setStatus = (text, cls) => {
   const el = $("status-line");

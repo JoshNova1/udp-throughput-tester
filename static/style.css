@@ -354,6 +354,26 @@ code {
 }
 .config-grid .card { margin-bottom: 0; }
 
+.presets-card { margin-bottom: 16px; }
+.presets-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 10px;
+}
+.preset-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  padding: 12px 14px;
+  text-align: left;
+  white-space: normal;
+  height: auto;
+  line-height: 1.3;
+}
+.preset-btn .preset-name { font-weight: 600; font-size: 13px; }
+.preset-btn .preset-detail { font-size: 11px; color: var(--text-muted); font-family: var(--font-mono); }
+
 .field { display: flex; flex-direction: column; gap: 6px; margin-bottom: 14px; }
 .field:last-child { margin-bottom: 0; }
 .field > label {

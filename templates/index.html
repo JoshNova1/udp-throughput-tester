@@ -103,6 +103,36 @@
       </div>
     </header>
 
+    <!-- Quick presets (sender-only) -->
+    <div class="card presets-card" id="presets-card">
+      <div class="card-head">
+        <div class="card-title">Quick presets</div>
+        <div class="card-meta muted">One-click standard test configurations</div>
+      </div>
+      <div class="presets-row">
+        <button id="preset-pre-event" class="btn preset-btn" type="button"
+                title="Production direction: 2 SRT streams at 2 Mbps each with 500ms latency, 30s. Run from the START kit.">
+          <span class="preset-name">Pre-event check</span>
+          <span class="preset-detail">SRT 2×2M · 500ms · 30s</span>
+        </button>
+        <button id="preset-ceiling" class="btn preset-btn" type="button"
+                title="Auto-test sweep with 2 streams from 1..20 Mbps each. Finds the real production-direction ceiling.">
+          <span class="preset-name">WAN ceiling sweep</span>
+          <span class="preset-detail">Auto · 2 streams · 1–20M</span>
+        </button>
+        <button id="preset-ping" class="btn preset-btn" type="button"
+                title="Quick health ping: 20 ICMP packets at 0.5s interval to peer.">
+          <span class="preset-name">Quick ping</span>
+          <span class="preset-detail">ICMP · 20× / 0.5s</span>
+        </button>
+        <button id="preset-reverse" class="btn preset-btn" type="button"
+                title="Reverse-direction sanity: 1 SRT stream at 5 Mbps, 200ms latency, 15s. Run from the FINISH kit.">
+          <span class="preset-name">Reverse sanity</span>
+          <span class="preset-detail">SRT 1×5M · 200ms · 15s</span>
+        </button>
+      </div>
+    </div>
+
     <!-- Sender-only configuration -->
     <div class="config-grid" id="config-grid">
       <div class="card">
