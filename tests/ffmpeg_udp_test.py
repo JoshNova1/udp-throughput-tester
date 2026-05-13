@@ -23,6 +23,11 @@ PROGRESS_RE = re.compile(
     r"bitrate=\s*(?P<bitrate>[\d.]+)\s*(?P<bunit>[kKmMgG]?)bits/s",
     re.IGNORECASE,
 )
+# Cumulative bytes counter — same convention as SrtSender's _FF_SIZE_RE.
+SIZE_RE = re.compile(
+    r"size=\s*(?P<size>[\d.]+)\s*(?P<unit>[kKmMgG])?iB",
+    re.IGNORECASE,
+)
 CC_ERROR_RE = re.compile(r"continuity check failed|missing.*PES packet|corrupt input")
 
 
@@ -35,6 +40,14 @@ def _to_mbps(value: float, unit: str) -> float:
     if u == "g":
         return value * 1000.0
     return value / 1_000_000.0
+
+
+def _size_to_bytes(value: float, unit: str) -> int:
+    u = (unit or "").lower()
+    if u == "k": return int(value * 1024)
+    if u == "m": return int(value * 1024 * 1024)
+    if u == "g": return int(value * 1024 * 1024 * 1024)
+    return int(value)
 
 
 class FfmpegUdpSender(Runner):
@@ -52,14 +65,24 @@ class FfmpegUdpSender(Runner):
         self.summary["started"] = time.time()
         self._proc = popen(cmd)
         assert self._proc.stdout is not None
+        last_mbps = 0.0
+        last_bytes = 0
+        samples_count = 0
         for raw in self._proc.stdout:
             if self._stopping:
                 break
             self.log(raw, tag="ffmpeg")
+            sm = SIZE_RE.search(raw)
+            if sm:
+                last_bytes = _size_to_bytes(
+                    float(sm.group("size")), sm.group("unit"),
+                )
             m = PROGRESS_RE.search(raw)
             if not m:
                 continue
             mbps = _to_mbps(float(m.group("bitrate")), m.group("bunit"))
+            last_mbps = mbps
+            samples_count += 1
             self.on_sample({
                 "ts": time.time(),
                 "frame": int(m.group("frame")),
@@ -69,6 +92,11 @@ class FfmpegUdpSender(Runner):
             })
         rc = self._proc.wait()
         self.summary["return_code"] = rc
+        self.summary["samples_count"] = samples_count
+        # Last cumulative-average bitrate from ffmpeg is the overall mean
+        # throughput for the test; same convention as SrtSender.
+        self.summary["throughput_mbps"] = round(last_mbps, 2)
+        self.summary["bytes_total"] = last_bytes
 
 
 class FfmpegUdpReceiver(Runner):
@@ -116,16 +144,26 @@ class FfmpegUdpReceiver(Runner):
         cc_errors = 0
         self._proc = popen(cmd)
         assert self._proc.stdout is not None
+        last_mbps = 0.0
+        last_bytes = 0
+        samples_count = 0
         for raw in self._proc.stdout:
             if self._stopping:
                 break
             self.log(raw, tag="ffmpeg")
             if CC_ERROR_RE.search(raw):
                 cc_errors += 1
+            sm = SIZE_RE.search(raw)
+            if sm:
+                last_bytes = _size_to_bytes(
+                    float(sm.group("size")), sm.group("unit"),
+                )
             m = PROGRESS_RE.search(raw)
             if not m:
                 continue
             mbps = _to_mbps(float(m.group("bitrate")), m.group("bunit"))
+            last_mbps = mbps
+            samples_count += 1
             self.on_sample({
                 "ts": time.time(),
                 "frame": int(m.group("frame")),
@@ -137,3 +175,6 @@ class FfmpegUdpReceiver(Runner):
         rc = self._proc.wait()
         self.summary["return_code"] = rc
         self.summary["cc_errors"] = cc_errors
+        self.summary["samples_count"] = samples_count
+        self.summary["throughput_mbps"] = round(last_mbps, 2)
+        self.summary["bytes_total"] = last_bytes

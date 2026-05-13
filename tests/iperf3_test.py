@@ -108,8 +108,15 @@ class Iperf3Sender(Runner):
                 last_summary_line = sample
                 self.summary.setdefault("totals", {})[tag] = sample
             else:
-                samples.append(sample)
-                self.on_sample(sample)
+                # iperf3 3.1.3 (Cygwin Windows build) doesn't tag its summary
+                # line; spot it by start_s==0 over the full test window plus
+                # the presence of lost/total fields, and treat as summary.
+                if d.get("lost") is not None and sample["start_s"] == 0.0:
+                    last_summary_line = sample
+                    self.summary.setdefault("totals", {}).setdefault("sender", sample)
+                else:
+                    samples.append(sample)
+                    self.on_sample(sample)
 
         rc = self._proc.wait()
         self.summary["return_code"] = rc
