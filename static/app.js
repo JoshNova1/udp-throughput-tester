@@ -508,8 +508,11 @@ async function firePreset(body, label) {
 }
 
 $("preset-pre-event").addEventListener("click", () => firePreset({
-  mode: "srt", streams: 2, bitrate_mbps: 2, latency_ms: 500,
-  duration: 30, source: "testpattern", resolution: "1280x720", framerate: 30,
+  mode: "auto", streams: 2,
+  start_mbps: 2, ceiling_mbps: 8, step_mbps: 1,
+  probe_duration_s: 12, soak_duration_s: 30,
+  latency_ms: 500, loss_pct_max: 5.0, rtt_ms_max: 400.0, deliver_pct_min: 85.0,
+  source: "testpattern", resolution: "1920x1080", framerate: 30,
 }, "Pre-event check"));
 
 $("preset-ceiling").addEventListener("click", () => firePreset({
