@@ -559,6 +559,9 @@ const connect = () => {
     if (m.type === "start") {
       resetChart();
       state.lastByStream = {};
+      state.peerLive = { live_streams: {}, ts: 0 };
+      state.activeMode = m.mode;
+      state.activeRole = m.role;
       setStatus(`running · ${m.mode} · role=${m.role} · streams=${m.streams || 1}`, "running");
       if (m.role === "receiver" && state.role !== "sender") {
         $("receiver-title").textContent =
@@ -568,10 +571,12 @@ const connect = () => {
         document.querySelector("#recv-indicator").classList.remove("idle");
         document.querySelector("#recv-indicator").classList.add("active", "pulse");
       }
+      startPeerLivePoll();
       startLivePreview();
     } else if (m.type === "sample") {
       handleSample(m);
     } else if (m.type === "done") {
+      stopPeerLivePoll();
       handleDone(m);
     } else if (m.type === "hello") {
       // session snapshot
@@ -579,6 +584,63 @@ const connect = () => {
   };
 };
 connect();
+
+// ─── Peer live-loss polling ─────────────────────────────────────────────────
+// SRT and ffmpeg_udp via ffmpeg-native don't expose per-packet loss in their
+// progress samples, so we compute it cross-machine: poll the peer's
+// /api/status snapshot every 1.5s, compare sender vs receiver bytes_total,
+// and update the loss KPI in near-real-time. Restricted to those two modes
+// (iperf3 already exposes loss in samples; ping/auto don't need it).
+state.peerLive = { live_streams: {}, ts: 0 };
+state.activeMode = null;
+state.activeRole = null;
+state.peerLivePoll = null;
+
+const startPeerLivePoll = () => {
+  stopPeerLivePoll();
+  if (state.activeMode !== "srt" && state.activeMode !== "ffmpeg_udp") return;
+  $("kpi-loss").textContent = "…";  // Option A: explicit "computing" indicator
+  state.peerLivePoll = setInterval(async () => {
+    try {
+      const r = await fetch("/api/peer/live");
+      if (!r.ok) return;
+      const j = await r.json();
+      state.peerLive = { live_streams: j.live_streams || {}, ts: Date.now() };
+      updateLiveLossKPI();
+    } catch (e) { /* peer unreachable — leave kpi as last value */ }
+  }, 1500);
+};
+
+const stopPeerLivePoll = () => {
+  if (state.peerLivePoll) {
+    clearInterval(state.peerLivePoll);
+    state.peerLivePoll = null;
+  }
+};
+
+const updateLiveLossKPI = () => {
+  const myStreams = state.lastByStream || {};
+  const peerStreams = (state.peerLive && state.peerLive.live_streams) || {};
+  let myBytes = 0, peerBytes = 0;
+  for (const sid in myStreams) {
+    if (myStreams[sid] && myStreams[sid].bytes) myBytes += myStreams[sid].bytes;
+  }
+  for (const sid in peerStreams) {
+    const b = peerStreams[sid] && peerStreams[sid].bytes_total;
+    if (b) peerBytes += b;
+  }
+  // Figure out which side is sender vs receiver to make loss = (sent-rcvd)/sent.
+  let senderBytes, receiverBytes;
+  if (state.activeRole === "sender") {
+    senderBytes = myBytes; receiverBytes = peerBytes;
+  } else {
+    senderBytes = peerBytes; receiverBytes = myBytes;
+  }
+  if (senderBytes > 0) {
+    const loss = Math.max(0, Math.min(100, 100 * (senderBytes - receiverBytes) / senderBytes));
+    $("kpi-loss").textContent = fmt(loss, 2);
+  }
+};
 
 // ─── Auto-test UI helpers ───────────────────────────────────────────────────
 const resetAutoUI = () => {
@@ -728,6 +790,7 @@ const handleSample = (m) => {
     rtt:        rtt        != null ? rtt        : prev.rtt,
     retrans:    retrans    != null ? retrans    : prev.retrans,
     drop:       drop       != null ? drop       : prev.drop,
+    bytes:      d.bytes_total != null ? d.bytes_total : prev.bytes,
     ts: Date.now(),
   };
   const streams = Object.values(state.lastByStream).filter(s => Date.now() - s.ts < 4000);
@@ -739,9 +802,13 @@ const handleSample = (m) => {
   const maxRtt = streams.some(s => s.rtt != null) ? max("rtt") : null;
   const totalRetrans = streams.some(s => s.retrans != null) ? sum("retrans") : null;
   const totalDrop = streams.some(s => s.drop != null) ? sum("drop") : null;
-  if (totalThroughput) $("kpi-throughput").textContent =
-     fmt(totalThroughput, 2) + (streams.length > 1 ? ` Σ${streams.length}` : "");
+  if (totalThroughput) $("kpi-throughput").textContent = fmt(totalThroughput, 2);
   if (maxLoss != null)    $("kpi-loss").textContent = fmt(maxLoss, 2);
+  else if (state.activeMode === "srt" || state.activeMode === "ffmpeg_udp") {
+    // Loss isn't in WS samples for these modes; compute it from peer's
+    // live bytes_total (polled via /api/peer/live) vs ours.
+    updateLiveLossKPI();
+  }
   if (maxJitter != null)  $("kpi-jitter").textContent = fmt(maxJitter, 2);
   if (maxRtt != null)     $("kpi-rtt").textContent = fmt(maxRtt, 1);
   if (totalRetrans != null) $("kpi-retrans").textContent = fmtInt(totalRetrans);

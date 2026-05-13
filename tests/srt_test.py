@@ -346,6 +346,7 @@ class SrtSender(Runner):
             self.on_sample({
                 "ts": time.time(),
                 "mbpsSendRate": mbps,
+                "bytes_total": last_bytes,
                 "role": "sender",
             })
         self._proc.wait()
@@ -431,6 +432,7 @@ class SrtReceiver(Runner):
             self.on_sample({
                 "ts": time.time(),
                 "mbpsRecvRate": mbps,
+                "bytes_total": last_bytes,
                 "role": "receiver",
             })
         self._proc.wait()

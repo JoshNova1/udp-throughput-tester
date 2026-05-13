@@ -87,6 +87,7 @@ class FfmpegUdpSender(Runner):
                 "ts": time.time(),
                 "frame": int(m.group("frame")),
                 "send_mbps": mbps,
+                "bytes_total": last_bytes,
                 "elapsed": m.group("time"),
                 "role": "sender",
             })
@@ -168,6 +169,7 @@ class FfmpegUdpReceiver(Runner):
                 "ts": time.time(),
                 "frame": int(m.group("frame")),
                 "recv_mbps": mbps,
+                "bytes_total": last_bytes,
                 "elapsed": m.group("time"),
                 "cc_errors": cc_errors,
                 "role": "receiver",

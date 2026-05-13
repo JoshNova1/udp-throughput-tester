@@ -178,6 +178,10 @@ class TestSession:
         # Side-process for the live preview JPEG (separate ffmpeg). Tracked
         # here so it gets cleaned up alongside the main runners.
         self.preview_proc = None
+        # Per-stream live state surfaced via /api/status so the sender's UI
+        # can poll the peer for receiver bytes during a test and compute
+        # live loss. {stream_id: {"bytes_total": int, "ts": float}}
+        self.live_streams: dict = {}
 
     def is_active(self) -> bool:
         return any(
@@ -210,6 +214,7 @@ class TestSession:
             "active": self.is_active(),
             "summary": self.last_summary,
             "streams": len(self.runners),
+            "live_streams": dict(self.live_streams),
         }
 
 
@@ -266,6 +271,13 @@ def build_runner(role: str, mode: str, stream_id: int = 0) -> Runner:
     test_id = SESSION.id
 
     def on_sample(s):
+        # Surface live bytes per stream so the peer's sender UI can poll us
+        # via /api/peer/live and compute a running loss number.
+        if "bytes_total" in s:
+            SESSION.live_streams[stream_id] = {
+                "bytes_total": s["bytes_total"],
+                "ts": time.time(),
+            }
         msg = {"type": "sample", "id": test_id, "role": role, "mode": mode,
                "stream_id": stream_id, "data": s}
         HUB.broadcast(msg)
@@ -564,6 +576,7 @@ def api_test_start():
     SESSION.started = time.time()
     SESSION.ended = None
     SESSION.last_summary = {}
+    SESSION.live_streams = {}
     SESSION.runners = []
 
     for i in range(streams):
@@ -641,6 +654,7 @@ def api_peer_listen():
     SESSION.started = time.time()
     SESSION.ended = None
     SESSION.last_summary = {}
+    SESSION.live_streams = {}
     SESSION.runners = []
 
     for i in range(streams):
@@ -665,6 +679,28 @@ def api_peer_stop():
     if SESSION.is_active():
         SESSION.stop_all()
     return jsonify({"ok": True})
+
+
+@app.route("/api/peer/live")
+def api_peer_live():
+    """Proxy the peer's session.live_streams (per-stream bytes_total) so the
+    sender's UI can compute live loss without a browser CORS round-trip."""
+    cfg = load_config()
+    peer = request.args.get("peer") or cfg.get("peer_host")
+    if not peer:
+        return jsonify({"error": "no peer configured"}), 400
+    port = int(request.args.get("peer_api_port") or cfg.get("peer_api_port", 8080))
+    try:
+        r = requests.get(f"http://{peer}:{port}/api/status", timeout=3)
+        r.raise_for_status()
+        sess = (r.json() or {}).get("session") or {}
+        return jsonify({
+            "live_streams": sess.get("live_streams") or {},
+            "active": sess.get("active", False),
+            "role": sess.get("role"),
+        })
+    except requests.RequestException as exc:
+        return jsonify({"error": str(exc)}), 502
 
 
 # ---------------------------------------------------------------------------
